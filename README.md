@@ -9,6 +9,28 @@ An advanced, high-performance Layer 2 frame filtering engine built upon **eBPF (
 
 ---
 
+## 📁 Repository Structure
+
+```text
+xdp-l2-guard/
+├── src/
+│   ├── data_plane/         # Kernel Space: eBPF C source code
+│   │   ├── filter.c        # Core XDP packet processing and dropping logic
+│   │   └── headers.h       # Protocol structures and verifier boundary helpers
+│   └── control_plane/      # User Space: Orchestration & Monitoring
+│       ├── loader.py       # Python BCC script (JIT compilation & interface binding)
+│       └── utils.py        # Helper routines and logging configuration
+├── scripts/
+│   ├── setup_env.sh        # Automated toolchain provisioning script
+│   └── benchmark.sh        # Traffic generation wrapper (pktgen / hping3)
+├── docs/
+│   └── documentation.md    # Detailed technical documentation & edge cases analysis
+├── README.md               # Project overview and deployment guide
+└── LICENSE                 # Project license
+```
+
+---
+
 ## 🏗️ Architectural Overview
 
 The system architecture is divided into two decoupled operations planes communicating asynchronously via high-performance **eBPF Maps**:
@@ -64,6 +86,7 @@ To run the engine in simulated Generic mode (for testing inside limited containe
 ```bash
 sudo python3 src/control_plane/loader.py --interface eth0 --generic
 ```
+---
 
 ## 🛡️ Dynamic Blacklist Configuration
 
@@ -76,12 +99,15 @@ The engine uses an in-kernel BPF Hash Map (blacklist_ips) to store targets. You 
   ```bash
   sudo bpftool map dump name blacklist_ips
   ```
+---
   
 ## 👥 Authors & Acknowledgments
 
 Developers: Krzysztof Taraszkiewicz and Józef Sztabiński  
 Academic Supervisor: dr inż Jerzy Demkowicz  
 Developed as part of Advanced Computer Architecture miniProject at Gdańsk University of Technology (Politechnika Gdańska).
+
+---
 
 ## 📄 License
 
