@@ -1,26 +1,26 @@
 #include "headers.h"
 
-// Natywna definicja mapy CO-RE BTF (Kernel 5.15+)
+// Native CO-RE BTF map definition (Kernel 5.15+)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u32);   // Klucz: Adres źródłowy IPv4 (32-bit)
-    __type(value, __u64); // Wartość: Licznik zrzuconych ram
+    __type(key, __u32);   // Key: IPv4 source address (32-bit)
+    __type(value, __u64); // Value: Dropped frame counter
     __uint(max_entries, 100000);
 } blacklist_ips SEC(".maps");
 
-// Zmieniono nazwę sekcji na standardowe "xdp" obsługiwane domyślnie przez iproute2
+// Section name set to standard "xdp" supported natively by iproute2
 SEC("xdp")
 int xdp_drop_logic(struct xdp_md *ctx) {
-    // 1. Ekstrakcja wskaźników z kontekstu warstwy DMA
+    // 1. Extract pointers from the DMA layer context
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
     struct ethhdr *eth = data;
     
-    // 2. Rygorystyczny Bounds Checking 
+    // 2. Strict Bounds Checking
     BOUNDS_CHECK(eth, struct ethhdr, data_end);
 
-    // Przesiewamy ruch używając CO-RE bpf_htons()
+    // Filter traffic using CO-RE bpf_htons()
     if (eth->h_proto != bpf_htons(ETH_P_IP))
         return XDP_PASS;
 
@@ -29,11 +29,11 @@ int xdp_drop_logic(struct xdp_md *ctx) {
 
     __u32 src_ip = ip->saddr;
 
-    // 3. Sprawdzenie w natywnym API bpf_helpers
+    // 3. Lookup in the native BPF API
     __u64 *drop_cnt = bpf_map_lookup_elem(&blacklist_ips, &src_ip);
 
     if (drop_cnt) {
-        // Atomowa inkrementacja statystyk
+        // Atomic statistics increment
         __sync_fetch_and_add(drop_cnt, 1);
         return XDP_DROP;
     }

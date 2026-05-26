@@ -1,44 +1,43 @@
 #!/bin/bash
 
-# Zatrzymanie skryptu w przypadku błędu
+# Exit immediately if a command exits with a non-zero status
 set -e
 
-echo "🚀 Rozpoczynam konfigurację środowiska XDP-L2-Guard..."
+echo "🚀 Starting XDP-L2-Guard environment configuration (CO-RE Standard)..."
 
-# 1. Weryfikacja wersji jądra (wymagane 5.15+)
+# 1. Verify kernel version (5.15+ required)
 KERNEL_VERSION=$(uname -r)
-echo "🛡️ Wykryta wersja jądra: $KERNEL_VERSION"
+echo "🛡️ Detected kernel version: $KERNEL_VERSION"
 
-# 2. Aktualizacja repozytoriów i instalacja paczek bazowych
-echo "📦 Instalowanie pakietów bazowych, kompilatorów i narzędzi BCC..."
-# Wymagane narzędzia LLVM/Clang oraz nagłówki jądra do kompilacji "restrykcyjnego C" do eBPF bytecode
+# 2. Update repositories and install base packages
+echo "📦 Installing base packages, compilers, and system tools..."
+# Required LLVM/Clang tools, kernel headers for AOT compilation, and linux-tools for bpftool
 sudo apt update && sudo apt install -y \
     clang \
     llvm \
     libbpf-dev \
     linux-headers-$(uname -r) \
-    python3-bpfcc \
-    bpfcc-tools \
-    python3-pyroute2 \
+    linux-tools-common \
+    linux-tools-$(uname -r) \
     ethtool \
     net-tools \
     gcc \
     make
 
-# 3. Weryfikacja instalacji cgroup v2 (wymagane przez nowoczesne mapy eBPF)
+# 3. Verify cgroup v2 support (required by modern eBPF maps)
 if grep -q cgroup2 /proc/filesystems; then
-    echo "✅ Wsparcie dla cgroup v2 zweryfikowane."
+    echo "✅ cgroup v2 support verified."
 else
-    echo "⚠️ UWAGA: Brak wsparcia cgroup v2, sprawdź konfigurację jądra!"
+    echo "⚠️ WARNING: cgroup v2 support missing, please check kernel configuration!"
 fi
 
-# 4. Optymalizacja interfejsu pod XDP Native (Wyłączenie hardware offloading)
-# Domyślnie bierzemy pierwszy aktywny interfejs (zazwyczaj eth0 lub enp0s3)
-INTERFACE=$(ip route | grep default | sed -e "s/^.*dev.//" -e "s/.proto.*//")
+# 4. Optimize interface for XDP Native (Disable hardware offloading)
+# Automatically fetch the default network interface
+INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
 
-echo "🔧 Konfiguracja interfejsu sieciowego: $INTERFACE"
-echo "Wyłączanie funkcji GRO/GSO (Generic Receive Offload), aby zapobiec konfliktom segmentacji ramek..."
-# Wyłączamy asystę hardware'u, przekierowując pakiety prosto na pętlę natywnego eBPF
-sudo ethtool -K $INTERFACE rx off tx off sg off tso off ufo off gso off gro off lro off || echo "Uwaga: Niektóre opcje ethtool mogą nie być wspierane przez wirtualną kartę."
+echo "🔧 Configuring network interface: $INTERFACE"
+echo "Disabling hardware offloading (GRO, GSO, SG, TSO) to prevent frame segmentation conflicts..."
+# Disable hardware assistance to redirect raw packets directly to the native eBPF loop
+sudo ethtool -K $INTERFACE sg off tso off ufo off gro off gso off || echo "Note: Some ethtool options might not be supported by the virtual network adapter."
 
-echo "🎉 Środowisko gotowe! Możesz teraz uruchomić skrypty ładujące w przestrzeni użytkownika."
+echo "🎉 Environment is ready! You can now compile the code using 'make' and launch the orchestrator."

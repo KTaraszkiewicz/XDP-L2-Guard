@@ -7,8 +7,8 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-/* Makro pomocnicze do weryfikacji barier pamięciowych (Bounds Checking).
- * Eliminuje błędy weryfikatora eBPF.
+/* * Helper macro for memory boundary verification (Bounds Checking).
+ * Ensures safe packet parsing and satisfies the eBPF Verifier requirements.
  */
 #define BOUNDS_CHECK(pointer, type, data_end) \
     do { \
