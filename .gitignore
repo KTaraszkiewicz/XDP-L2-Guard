@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+
+# --- Kompilacja i artefakty projektu ---
+# Ignoruj skompilowane obiekty eBPF (CO-RE/ELF)
+*.o
+*.so
+*.elf
+
+# Pliki generowane przez kompilator
+*.ll
+*.bc
+
+# Ignoruj pliki tymczasowe generowane przez make/gcc
+*.dSYM
+*.log
+
+# --- Systemowe ---
+.DS_Store
+Thumbs.db
+
+# --- VirtualBox / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
