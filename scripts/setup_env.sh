@@ -21,7 +21,9 @@ sudo apt update && sudo apt install -y \
     bpfcc-tools \
     python3-pyroute2 \
     ethtool \
-    net-tools
+    net-tools \
+    gcc \
+    make
 
 # 3. Weryfikacja instalacji cgroup v2 (wymagane przez nowoczesne mapy eBPF)
 if grep -q cgroup2 /proc/filesystems; then
@@ -37,6 +39,6 @@ INTERFACE=$(ip route | grep default | sed -e "s/^.*dev.//" -e "s/.proto.*//")
 echo "🔧 Konfiguracja interfejsu sieciowego: $INTERFACE"
 echo "Wyłączanie funkcji GRO/GSO (Generic Receive Offload), aby zapobiec konfliktom segmentacji ramek..."
 # Wyłączamy asystę hardware'u, przekierowując pakiety prosto na pętlę natywnego eBPF
-sudo ethtool -K $INTERFACE gro off gso off tx off rx off || echo "Uwaga: Niektóre opcje ethtool mogą nie być wspierane przez wirtualną kartę."
+sudo ethtool -K $INTERFACE rx off tx off sg off tso off ufo off gso off gro off lro off || echo "Uwaga: Niektóre opcje ethtool mogą nie być wspierane przez wirtualną kartę."
 
 echo "🎉 Środowisko gotowe! Możesz teraz uruchomić skrypty ładujące w przestrzeni użytkownika."

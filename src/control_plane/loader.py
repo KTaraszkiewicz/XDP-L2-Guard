@@ -47,15 +47,18 @@ def main():
         logger.info("Żądanie wysokiej wydajności – przypinanie w trybie Native (xdpdrv)...")
 
     # 3. Przypięcie obiektu ELF do karty sieciowej używając natywnego iproute2
-    # Czyszczenie poprzednich reguł zapobiegawczo
+    # Czyszczenie poprzednich reguł specyficznymi komendami, aby usunąć "zombie"
+    run_cmd(f"ip link set dev {interface} xdpgeneric off")
+    run_cmd(f"ip link set dev {interface} xdpdrv off")
     run_cmd(f"ip link set dev {interface} xdp off") 
     
-    attach_cmd = f"ip link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp"
+    # DODANA FLAGA -force: Gwarantuje nadpisanie starych programów XDP w jądrze
+    attach_cmd = f"ip -force link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp"
     attach_res = run_cmd(attach_cmd)
     
     if attach_res.returncode != 0:
         logger.error(f"Krytyczny błąd montowania podsystemu:\n{attach_res.stderr}")
-        logger.info("Wskazówka: Wyłącz offloading sprzętowy komendą 'sudo ethtool -K <interface> gro off'!")
+        logger.info(f"Wskazówka: Upewnij się, że wyłączyłeś offload komendą: sudo ethtool -K {interface} gro off gso off")
         sys.exit(1)
 
     logger.info("Pomyślnie wpięto ELF CO-RE do warstwy eXpress Data Path.")
@@ -98,7 +101,8 @@ def main():
         print("\n")
         logger.info("Wychwycono SIGINT. Demontowanie logiki Data Plane...")
     finally:
-        # 5. Bezpieczne odpięcie środowiska CO-RE
+        # 5. Bezpieczne odpięcie środowiska CO-RE - celujemy prosto w używany tryb
+        run_cmd(f"ip link set dev {interface} {xdp_mode} off")
         run_cmd(f"ip link set dev {interface} xdp off")
         logger.info(f"Odepnięto reguły z {interface}. Pamięć DMA zwolniona i bezpieczna.")
 
