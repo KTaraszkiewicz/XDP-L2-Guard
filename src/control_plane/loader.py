@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import setup_logger, int_to_ip
 
 def main():
-    # 1. Konfiguracja argumentów uruchomieniowych (zgodnie z dokumentacją)
+    # 1. Konfiguracja argumentów uruchomieniowych
     parser = argparse.ArgumentParser(description="XDP-L2-Guard eBPF Control Plane")
     parser.add_argument("-i", "--interface", required=True, help="Interfejs sieciowy, np. eth0")
     parser.add_argument("--generic", action="store_true", help="Wymusza tryb wirtualny XDP (Generic/SKB Mode)")
@@ -19,14 +19,17 @@ def main():
     logger = setup_logger()
     interface = args.interface
 
-    # Pobranie bezwzględnej ścieżki do pliku źródłowego C
-    bpf_source_file = os.path.join(os.path.dirname(__file__), "../data_plane/filter.c")
+    # Bezwzględne ścieżki dla kompilatora Clang/LLVM
+    control_plane_dir = os.path.dirname(os.path.abspath(__file__))
+    data_plane_dir = os.path.abspath(os.path.join(control_plane_dir, "../data_plane"))
+    bpf_source_file = os.path.join(data_plane_dir, "filter.c")
 
     logger.info(f"Rozpoczynam inicjalizację silnika na interfejsie: {interface}")
 
-    # 2. Inicjalizacja Just-In-Time z użyciem wbudowanego resolwera include w BCC
+    # 2. Inicjalizacja JIT z użyciem wbudowanego resolwera i flag kompilatora (cflags)
     try:
-        b = BPF(src_file=bpf_source_file)
+        # Przekazujemy flagę -I do Clanga, aby poprawnie zaincludował "headers.h"
+        b = BPF(src_file=bpf_source_file, cflags=[f"-I{data_plane_dir}"])
         logger.info("Kompilacja środowiska LLVM JIT zakończona sukcesem.")
     except Exception as e:
         logger.error(f"Błąd kompilacji maszyny eBPF Verifier: {e}")
@@ -48,7 +51,7 @@ def main():
         logger.info("Pomyślnie związano NAPI Hook ze sterownikiem adaptera.")
     except Exception as e:
         logger.error(f"Krytyczny błąd montowania podsystemu: {e}")
-        logger.info("Wskazówka: Wyłącz offloading sprzętowy komendą 'ethtool -K <interface> gro off'!")
+        logger.info("Wskazówka: Wyłącz offloading sprzętowy komendą 'sudo ethtool -K <interface> gro off'!")
         sys.exit(1)
 
     # Nawiązanie uchwytu do pamięci jądra współdzielonej z Data Plane
