@@ -10,6 +10,7 @@ struct {
 
 // Section name set to standard "xdp" supported natively by iproute2
 SEC("xdp")
+/*
 int xdp_drop_logic(struct xdp_md *ctx) {
     // 1. Extract pointers from the DMA layer context
     void *data = (void *)(long)ctx->data;
@@ -40,6 +41,7 @@ int xdp_drop_logic(struct xdp_md *ctx) {
 
     return XDP_PASS;
 }
+*/
 
 int xdp_panic_test(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
