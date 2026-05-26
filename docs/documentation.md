@@ -41,7 +41,7 @@ Phase One of the `XDP-L2-Guard` security engine relies on a decoupled **Split-Pl
 
 This paradigm entirely eliminates the runtime overhead of Just-In-Time (JIT) compilation on target hosts by safely decoupling the compilation lifecycle from the deployment and live monitoring phases.
 
-### 1. Data Plane: CO-RE Processing Pipeline
+## 1. Data Plane: CO-RE Processing Pipeline
 
 The fast data path implemented in `src/data_plane/filter.c` operates within a restrictive subset of the C programming language and leverages native kernel definitions (such as `bpf_endian.h`).
 
@@ -50,7 +50,7 @@ The fast data path implemented in `src/data_plane/filter.c` operates within a re
 * **Static Bounds Checking:** Prior to performing any pointer arithmetic on raw DMA memory (`ctx->data`), the custom `BOUNDS_CHECK` macro is invoked. This routine mathematically proves to the static eBPF Verifier that all data access offsets reside strictly inside the verified frame boundaries, preventing memory safety violations and eliminating loading rejections.
 * **Constant-Time $O(1)$ Decisions:** The extracted source IPv4 address is queried against the hash map via the native `bpf_map_lookup_elem()` internal helper. A successful key match triggers an atomic statistics increment inside kernel memory and returns a definitive **`XDP_DROP`** verdict. The frame is instantaneously discarded at the NIC driver level, bypassing the expensive `sk_buff` allocation overhead, preventing soft interrupt CPU saturation (`ksoftirqd`), and neutralizing potential Kernel Panic conditions.
 
-### 2. Control Plane: Orchestration and JSON Polling
+## 2. Control Plane: Orchestration and JSON Polling
 
 Under the CO-RE paradigm, the user-space application written in Python (`src/control_plane/loader.py`) relinquishes its role as an on-the-fly compiler. Instead, it functions as a highly stable **operating system orchestrator** that interacts with kernel subsystems through standard Linux administrative utilities.
 
@@ -64,7 +64,7 @@ The control plane orchestrates deployment across three sequential execution phas
     The inclusion of the `-force` flag guarantees that any stale hooks or active "zombie" programs are overridden unconditionally, avoiding mounting deadlocks. The control plane natively respects both emulated (`xdpgeneric`) and high-performance native (`xdpdrv`) attachment modes.
 3.  **Asynchonous Memory Map Polling (bpftool):** The script enters a persistent monitoring loop executing at 1-second intervals. Rather than relying on heavy third-party library wrappers, it directly polls the native `bpftool -j map dump` utility to capture shared map state changes in structured JSON format. The retrieved byte arrays are decoded from little-endian formatting into standard dotted-quad IPv4 strings, reporting real-time drop statistics to standard output without injecting any compute latency into the hardware data path.
 
-### 3. Graceful Detach Mechanism
+## 3. Graceful Detach Mechanism
 
 Managing exceptional exit states (`KeyboardInterrupt` / SIGINT) within a CO-RE management layer differs fundamentally from older runtime wrappers. Instead of unbinding abstract API handles, the orchestrator triggers a kaskade of targeted link deconfiguration commands within a deterministic `finally` clause:
 
@@ -74,3 +74,57 @@ finally:
     run_cmd("ip link set dev enp0s3 xdpdrv off")
     run_cmd("ip link set dev enp0s3 xdp off")
 ```
+
+---
+
+# Architectural Safety and eBPF Verifier Validation
+
+The second phase of the `XDP-L2-Guard` project empirically validates the inherent safety mechanisms of the eBPF ecosystem by contrasting it with traditional Linux Kernel Modules (LKM). The objective is to demonstrate how the **eBPF Verifier** prevents catastrophic memory violations before execution.
+
+## 1. Traditional LKM Vulnerability (The Baseline)
+
+To establish a comparative baseline, a vulnerable LKM (`lkm_panic/null_pointer.c`) was engineered to execute an illegal NULL pointer dereference in kernel space. 
+When compiled and injected via `insmod`, the execution resulted in a **Kernel Oops** (on modern kernels like 7.x). The kernel forcefully killed the loading process to prevent a total freeze (Kernel Panic), but left the system in a "tainted", compromised state, proving that traditional modules execute code blindly before assessing its safety.
+
+## 2. eBPF Vulnerability Simulation (Compiler Evasion)
+
+To simulate an equivalent developer error in the XDP Data Plane, the `src/data_plane/filter.c` source code was intentionally crippled. The critical `BOUNDS_CHECK` macro was removed before reading the `eth->h_proto` structure field:
+```c
+// Intentional omission of boundary checks:
+// BOUNDS_CHECK(eth, struct ethhdr, data_end); 
+if (eth->h_proto == bpf_htons(ETH_P_IP)) { ... }
+```
+
+Because the LLVM/Clang compiler using the -O2 optimization flag automatically strips out trivial "Undefined Behaviors" (like explicit NULL pointers), removing the packet boundary checks successfully forces the compiler to leave the unsafe memory read inside the generated ELF object.
+
+## 3. Orchestrator Alignment (ELF Section Targeting)
+
+During testing, an architectural anomaly occurred where the vulnerable code was ignored by the loader. This was resolved by explicitly assigning the SEC("xdp") attribute directly above the flawed xdp_panic_test function. This alignment ensures that the iproute2 user-space tool targets the corrupted bytecode and injects it into the kernel's evaluation pipeline.
+
+## 4. The Verifier Verdict (Fail-Safe Architecture)
+
+When the Control Plane orchestrator (loader.py) attempted to bind the unsafe ELF object to the network interface, the kernel completely blocked the operation. The eBPF Verifier evaluated the bytecode's Directed Acyclic Graph (DAG) and detected an Out-Of-Bounds memory access capability.
+
+The loader correctly aborted with a Permission denied error, outputting the Verifier's exact trace:
+```text
+00:19:44 [INFO] Initializing CO-RE engine on interface: enp0s3
+00:19:44 [INFO] Triggering Ahead-of-Time (AOT) compilation...
+00:19:45 [ERROR] Critical error mounting subsystem:
+libbpf: prog 'xdp_panic_test': BPF program load failed: -EACCES
+libbpf: prog 'xdp_panic_test': -- BEGIN PROG LOAD LOG --
+0: R1=ctx() R10=fp0
+; void *data = (void *)(long)ctx->data; @ filter.c:47
+0: (61) r1 = *(u32 *)(r1 +0)          ; R1=pkt(r=0)
+; if (eth->h_proto == bpf_htons(ETH_P_IP)) { @ filter.c:56
+1: (71) r2 = *(u8 *)(r1 +12)
+invalid access to packet, off=12 size=1, R1(id=0,off=12,r=0)
+R1 offset is outside of the packet
+processed 2 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0
+-- END PROG LOAD LOG --
+libbpf: prog 'xdp_panic_test': failed to load: -EACCES
+libbpf: failed to load object '/home/krzysztof/Project/XDP-L2-Guard/src/data_plane/filter.o'
+```
+
+## 5. Conclusion
+
+The experiment successfully proved that the eBPF Verifier acts as an impenetrable shield. Unlike LKMs, the eBPF engine guarantees 100% Zero-Downtime and system stability by systematically denying the execution of unverified pointers at the virtual machine level.
