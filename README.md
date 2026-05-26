@@ -3,6 +3,7 @@
 [![Kernel Compatibility](https://img.shields.io/badge/Kernel-5.15%2B-blue.svg)](https://kernel.org)
 [![Platform](https://img.shields.io/badge/Platform-Ubuntu%2022.04%20LTS-orange.svg)](https://ubuntu.com)
 [![Technology](https://img.shields.io/badge/Technology-eBPF%20%2F%20XDP%20Native-flash.svg)](https://ebpf.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An advanced, high-performance Layer 2 frame filtering engine built upon **eBPF (extended Berkeley Packet Filter)** and **XDP (eXpress Data Path)**. This project implements a split-plane architecture designed for real-time volumetric DDoS mitigation at the network interface driver level, completely bypassing the expensive Linux network stack allocation overhead.
 
@@ -84,4 +85,4 @@ Developed as part of Advanced Computer Architecture miniProject at Gdańsk Unive
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
