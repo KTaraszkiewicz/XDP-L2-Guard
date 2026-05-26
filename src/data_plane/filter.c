@@ -41,4 +41,12 @@ int xdp_drop_logic(struct xdp_md *ctx) {
     return XDP_PASS;
 }
 
+int xdp_panic_test(struct xdp_md *ctx) {
+    int *ptr = NULL;
+    int val = *ptr; // Próba odczytu z NULL pointera!
+    
+    if (val == 42) return XDP_DROP;
+    return XDP_PASS;
+}
+
 char _license[] SEC("license") = "GPL";
