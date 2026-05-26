@@ -42,10 +42,19 @@ int xdp_drop_logic(struct xdp_md *ctx) {
 }
 
 int xdp_panic_test(struct xdp_md *ctx) {
-    int *ptr = NULL;
-    int val = *ptr; // Próba odczytu z NULL pointera!
+    void *data = (void *)(long)ctx->data;
+    struct ethhdr *eth = data;
     
-    if (val == 42) return XDP_DROP;
+    // ⚠️ INTENTIONAL ENGINEERING ERROR ⚠️
+    // We deliberately removed the BOUNDS_CHECK macro!
+    // We are attempting to read a structure field (eth->h_proto) from RAM 
+    // without first verifying if the packet is large enough.
+    // In a traditional kernel module (C), this could cause a Kernel Panic (Out-Of-Bounds Read).
+    
+    if (eth->h_proto == bpf_htons(ETH_P_IP)) {
+        return XDP_DROP;
+    }
+    
     return XDP_PASS;
 }
 

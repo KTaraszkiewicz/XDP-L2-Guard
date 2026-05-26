@@ -2,20 +2,20 @@
 #include <linux/kernel.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Inzynier Systemowy");
-MODULE_DESCRIPTION("Prezentacja bledu Kernel Panic (Dereferencja NULL)");
+MODULE_AUTHOR("Systems Engineer");
+MODULE_DESCRIPTION("Kernel Panic Demonstration (NULL Pointer Dereference)");
 
 int init_module(void) {
     int *ptr = NULL;
-    printk(KERN_EMERG "LKM: Inicjalizacja destrukcyjnego modulu...\n");
-    printk(KERN_EMERG "LKM: Proba zapisu do adresu NULL (0x0)...\n");
+    printk(KERN_EMERG "LKM: Initializing destructive module...\n");
+    printk(KERN_EMERG "LKM: Attempting to write to NULL address (0x0)...\n");
     
-    // Katastrofa następuje tutaj:
+    // The catastrophe happens here:
     *ptr = 42; 
     
     return 0;
 }
 
 void cleanup_module(void) {
-    printk(KERN_INFO "LKM: Modul usuniety.\n");
+    printk(KERN_INFO "LKM: Module removed.\n");
 }
