@@ -77,6 +77,11 @@ Before mounting the native data plane, hardware features such as GRO (Generic Re
 ```bash
 sudo ethtool -K eth0 gro off gso off tx off rx off
 ```
+### (Automated option) 1. and 2. are composed into script setup_env.sh:
+```bash
+./setup_env.sh
+```
+
 ### 3. Launching the Security Engine
 Execute the control plane loader script to compile and attach the high-speed data plane filters onto the designated hardware interface:
 ```bash
