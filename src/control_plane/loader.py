@@ -3,81 +3,103 @@ import time
 import sys
 import os
 import argparse
-from bcc import BPF
+import subprocess
+import json
+import struct
 
-# Dołączenie ścieżki absolutnej w celu poprawnego importu z tego samego katalogu
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import setup_logger, int_to_ip
 
+def run_cmd(cmd):
+    """Pomocnicza funkcja do wywoływania komend shellowych"""
+    return subprocess.run(cmd, shell=True, text=True, capture_output=True)
+
 def main():
-    # 1. Konfiguracja argumentów uruchomieniowych
-    parser = argparse.ArgumentParser(description="XDP-L2-Guard eBPF Control Plane")
+    parser = argparse.ArgumentParser(description="XDP-L2-Guard CO-RE Control Plane")
     parser.add_argument("-i", "--interface", required=True, help="Interfejs sieciowy, np. eth0")
-    parser.add_argument("--generic", action="store_true", help="Wymusza tryb wirtualny XDP (Generic/SKB Mode)")
+    parser.add_argument("--generic", action="store_true", help="Wymusza tryb wirtualny XDP (xdpgeneric)")
     args = parser.parse_args()
 
     logger = setup_logger()
     interface = args.interface
 
-    # Bezwzględne ścieżki dla kompilatora Clang/LLVM
+    # Ścieżki
     control_plane_dir = os.path.dirname(os.path.abspath(__file__))
-    data_plane_dir = os.path.abspath(os.path.join(control_plane_dir, "../data_plane"))
-    bpf_source_file = os.path.join(data_plane_dir, "filter.c")
+    project_root = os.path.abspath(os.path.join(control_plane_dir, "../../"))
+    bpf_obj_file = os.path.join(project_root, "src/data_plane/filter.o")
 
-    logger.info(f"Rozpoczynam inicjalizację silnika na interfejsie: {interface}")
+    logger.info(f"Rozpoczynam inicjalizację CO-RE na interfejsie: {interface}")
 
-    # 2. Inicjalizacja JIT z użyciem wbudowanego resolwera i flag kompilatora (cflags)
-    try:
-        # Przekazujemy flagę -I do Clanga, aby poprawnie zaincludował "headers.h"
-        b = BPF(src_file=bpf_source_file, cflags=[f"-I{data_plane_dir}"])
-        logger.info("Kompilacja środowiska LLVM JIT zakończona sukcesem.")
-    except Exception as e:
-        logger.error(f"Błąd kompilacji maszyny eBPF Verifier: {e}")
+    # 1. Kompilacja AOT przy pomocy Makefile
+    logger.info("Wyzwalanie kompilacji Ahead-of-Time...")
+    compile_res = run_cmd(f"cd {project_root} && make")
+    if compile_res.returncode != 0:
+        logger.error(f"Błąd kompilacji CO-RE:\n{compile_res.stderr}")
+        sys.exit(1)
+    
+    if not os.path.exists(bpf_obj_file):
+        logger.error("Błąd krytyczny: Nie odnaleziono skompilowanego pliku filter.o!")
         sys.exit(1)
 
-    # 3. Flagi podpinania: 1<<1 to Generic (SKB), 1<<2 to Native (DRV)
-    xdp_flags = 0
-    if args.generic:
-        xdp_flags |= (1 << 1)
-        logger.info("Żądanie emulacji – używam trybu Generic (SKB).")
-    else:
-        xdp_flags |= (1 << 2)
-        logger.info("Żądanie wysokiej wydajności – próba trybu Native XDP...")
+    # 2. Wybór trybu (Native / Generic)
+    xdp_mode = "xdpgeneric" if args.generic else "xdpdrv"
+    if not args.generic:
+        logger.info("Żądanie wysokiej wydajności – przypinanie w trybie Native (xdpdrv)...")
 
-    # 4. Aplikacja reguł XDP na warstwie sterownika
-    try:
-        fn = b.load_func("xdp_drop_logic", BPF.XDP)
-        b.attach_xdp(dev=interface, fn=fn, flags=xdp_flags)
-        logger.info("Pomyślnie związano NAPI Hook ze sterownikiem adaptera.")
-    except Exception as e:
-        logger.error(f"Krytyczny błąd montowania podsystemu: {e}")
+    # 3. Przypięcie obiektu ELF do karty sieciowej używając natywnego iproute2
+    # Czyszczenie poprzednich reguł zapobiegawczo
+    run_cmd(f"ip link set dev {interface} xdp off") 
+    
+    attach_cmd = f"ip link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp"
+    attach_res = run_cmd(attach_cmd)
+    
+    if attach_res.returncode != 0:
+        logger.error(f"Krytyczny błąd montowania podsystemu:\n{attach_res.stderr}")
         logger.info("Wskazówka: Wyłącz offloading sprzętowy komendą 'sudo ethtool -K <interface> gro off'!")
         sys.exit(1)
 
-    # Nawiązanie uchwytu do pamięci jądra współdzielonej z Data Plane
-    blacklist_map = b.get_table("blacklist_ips")
+    logger.info("Pomyślnie wpięto ELF CO-RE do warstwy eXpress Data Path.")
     logger.info("Silnik uruchomiony. Monitorowanie asynchroniczne trwa (Ctrl+C przerywa).")
 
-    # 5. Pętla pollingu map eBPF i eleganckie zakończenie pracy
+    # 4. Pętla pollingu map eBPF za pomocą narzędzia bpftool
     try:
         while True:
             time.sleep(1)
-            if len(blacklist_map) > 0:
-                print("\n" + "━"*50)
-                logger.info("Aktywne blokady na warstwie eXpress Data Path:")
-                for k, v in blacklist_map.items():
-                    ip_addr = int_to_ip(k.value)
-                    logger.info(f" ➔ Adres źródłowy [{ip_addr}] zablokowano: {v.value} ramek")
-                print("━"*50)
+            # Pobieramy zrzut mapy blacklist_ips w formacie JSON
+            dump_res = run_cmd("bpftool -j map dump name blacklist_ips")
+            
+            if dump_res.returncode == 0 and dump_res.stdout.strip():
+                map_data = json.loads(dump_res.stdout)
+                
+                if len(map_data) > 0:
+                    print("\n" + "━"*50)
+                    logger.info("Aktywne blokady na warstwie eXpress Data Path:")
+                    
+                    for item in map_data:
+                        # bpftool zwraca tablice heksów np. ["0xc0", "0xa8", "0x01", "0x64"]
+                        key_bytes = [int(x, 16) for x in item["key"]]
+                        val_bytes = [int(x, 16) for x in item["value"]]
+                        
+                        # Dekodujemy little-endian do natywnych typów
+                        ip_int = struct.unpack("<I", bytes(key_bytes))[0]
+                        drop_count = struct.unpack("<Q", bytes(val_bytes))[0]
+                        
+                        ip_addr = int_to_ip(ip_int)
+                        logger.info(f" ➔ Adres źródłowy [{ip_addr}] zablokowano: {drop_count} ramek")
+                    print("━"*50)
+                else:
+                    sys.stdout.write("🛡️ ")
+                    sys.stdout.flush()
             else:
-                # Wskaźnik, że system żyje i jest gotowy
                 sys.stdout.write("🛡️ ")
                 sys.stdout.flush()
+
     except KeyboardInterrupt:
         print("\n")
         logger.info("Wychwycono SIGINT. Demontowanie logiki Data Plane...")
     finally:
-        b.remove_xdp(dev=interface, flags=xdp_flags)
+        # 5. Bezpieczne odpięcie środowiska CO-RE
+        run_cmd(f"ip link set dev {interface} xdp off")
         logger.info(f"Odepnięto reguły z {interface}. Pamięć DMA zwolniona i bezpieczna.")
 
 if __name__ == "__main__":
