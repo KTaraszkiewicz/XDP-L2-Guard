@@ -23,6 +23,9 @@ xdp-l2-guard/
 ├── scripts/
 │   ├── setup_env.sh        # Automated toolchain provisioning script
 │   └── benchmark.sh        # Traffic generation wrapper (pktgen / hping3)
+├── lkm_panic/              # Demo: Linux Kernel Module (LKM) crash simulation
+│   ├── Makefile            # Build directives to compile the malicious kernel object (.ko)
+│   └── null_pointer.c      # Vulnerable C code triggering intentional NULL pointer dereference
 ├── docs/
 │   └── documentation.md    # Detailed technical documentation & edge cases analysis
 ├── README.md               # Project overview and deployment guide
