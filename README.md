@@ -102,7 +102,7 @@ sudo python3 src/control_plane/loader.py --interface enp0s3 --generic
 The engine uses an in-kernel BPF Hash Map (blacklist_ips) to store targets. You can interact with the live kernel data plane directly from User Space using standard toolsets.
 - Manually insert a blocked IPv4 address (e.g., 192.168.1.100 -> Hex: c0 a8 01 64):
   ```bash
-  sudo bpftool map update name blacklist_ips key 0xc0 0xa8 0x01 0x64 value 0x00 0x00 0x00 0x00
+  sudo bpftool map update name blacklist_ips key 0xc0 0xa8 0x01 0x64 value 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00
   ```
 - Inspect current drops and counters:
   ```bash
