@@ -27,7 +27,7 @@ xdp-l2-guard/
 │   ├── Makefile            # Build directives to compile the malicious kernel object (.ko)
 │   └── null_pointer.c      # Vulnerable C code triggering intentional NULL pointer dereference
 ├── docs/
-│   ├── issue_report.md     # Detailed issue report with analysis, solutions and recommendations
+│   ├── issues_report.md     # Detailed issue report with analysis, solutions and recommendations
 │   └── documentation.md    # Detailed documentation of steps done during deployment
 ├── README.md               # Project overview and deployment guide
 ├── Makefile                # Build directives for CO-RE Ahead-of-Time (AOT) compilation
