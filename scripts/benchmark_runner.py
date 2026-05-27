@@ -106,10 +106,10 @@ class BenchmarkOrchestrator:
         subprocess.Popen(["ip", "netns", "exec", "ns1", "iperf3", "-s", "-D"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
 
-        print(f"{Colors.RED}[!] Starting 12-THREAD {packet_size}B Flood...{Colors.END}")
+        print(f"{Colors.RED}[!] Starting {os.cpu_count()}-THREAD {packet_size}B Flood...{Colors.END}")
         ip1 = self.ns_config["ns1"]["ip"]
         flood_procs = []
-        for _ in range(12):
+        for _ in range(os.cpu_count() or 1):
             p = subprocess.Popen([
                 "ip", "netns", "exec", "ns3", 
                 "hping3", "--flood", "--udp", "-d", str(packet_size), "-a", self.ns_config["ns3"]["ip"], ip1
