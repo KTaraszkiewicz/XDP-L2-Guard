@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="XDP-L2-Guard CO-RE Control Plane")
     parser.add_argument("-i", "--interface", required=True, help="Network interface, e.g., eth0")
     parser.add_argument("--generic", action="store_true", help="Force XDP generic mode (xdpgeneric)")
+    parser.add_argument("-n", "--non-interactive", action="store_true", help="Exit after attachment (no monitoring loop)")
     args = parser.parse_args()
 
     logger = setup_logger()
@@ -62,6 +63,11 @@ def main():
         sys.exit(1)
 
     logger.info("Successfully attached CO-RE ELF to the eXpress Data Path.")
+    
+    if args.non_interactive:
+        logger.info("Non-interactive mode: Exiting.")
+        return
+
     logger.info("Engine running. Asynchronous monitoring active (press Ctrl+C to abort).")
 
     # 4. Polling eBPF maps via bpftool
