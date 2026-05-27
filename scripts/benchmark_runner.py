@@ -90,17 +90,23 @@ class BenchmarkOrchestrator:
             mac3 = self.ns_config["ns3"]["mac"]
             self.run(f"sudo iptables -A FORWARD -m mac --mac-source {mac3} -j DROP")
         elif mode == "xdp":
-            print(f"{Colors.GREEN}[+] Loading XDP-L2-Guard (O(1) Map Lookup)...{Colors.END}")
+            print(f"{Colors.GREEN}[+] Loading XDP-L2-Guard (STRICT NATIVE)...{Colors.END}")
             loader_path = os.path.join(self.project_root, "src/control_plane/loader.py")
-            # Attach and exit monitoring loop quickly
-            attach_proc = subprocess.Popen(
-                ["sudo", "python3", loader_path, "-i", iface, "--generic"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            time.sleep(5)
-            attach_proc.kill()
             
-            print(f"{Colors.GREEN}[+] Injecting Attacker IP into Map...{Colors.END}")
+            # Run loader and wait for completion of attachment
+            res = self.run(f"sudo python3 {loader_path} -i {iface}")
+            if res.returncode != 0:
+                print(f"{Colors.RED}[!] Native XDP not supported on {iface}. Skipping XDP test.{Colors.END}")
+                return
+
+            # Double check with ip link
+            check_link = self.run(f"ip link show {iface}")
+            if "xdpdrv" not in check_link.stdout:
+                print(f"{Colors.RED}[!] Failed to attach in NATIVE mode. (Found: {check_link.stdout.strip()}){Colors.END}")
+                self.run(f"sudo ip link set dev {iface} xdp off")
+                return
+            
+            print(f"{Colors.GREEN}[+] Native XDP Verified. Injecting Attacker IP...{Colors.END}")
             self.run("sudo bpftool map update name blacklist_ips key 0x03 0x00 0x00 0x0a value 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00")
 
         subprocess.Popen(["ip", "netns", "exec", "ns1", "iperf3", "-s", "-D"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -144,41 +150,68 @@ class BenchmarkOrchestrator:
             if mode == "xdp": self.run(f"sudo ip link set dev {iface} xdp off", check=False)
 
     def report(self):
-        print("\n" + "="*60)
-        print(f"{'MODE':<15} | {'Mbps':>8} | {'ms':>6} | {'LOSS%':>6} | {'SIQ%' :>6}")
-        print("-" * 60)
+        report_str = "\n" + "="*70 + "\n"
+        report_str += f"{'MODE':<20} | {'Mbps':>10} | {'ms':>8} | {'LOSS%':>8} | {'SIQ%':>8}\n"
+        report_str += "-" * 70 + "\n"
         for r in self.results:
-            print(f"{r['mode']:<15} | {r['throughput_mbps']:>8} | {r['latency_ms']:>6} | {r['loss_percent']:>5}% | {r['softirq_percent']:>5}%")
-        print("="*60)
+            report_str += f"{r['mode']:<20} | {r['throughput_mbps']:>10} | {r['latency_ms']:>8} | {r['loss_percent']:>7}% | {r['softirq_percent']:>7}%\n"
+        report_str += "="*70 + "\n"
+        
+        print(report_str)
+        with open("benchmark_report.txt", "w") as f:
+            f.write(report_str)
+        print(f"{Colors.GREEN}[+] Report saved to benchmark_report.txt{Colors.END}")
         self.plot_results()
 
     def plot_results(self):
         if not self.results: return
+        
+        # Data preparation
         modes = [r['mode'] for r in self.results]
-        throughput = [r['throughput_mbps'] for r in self.results]
-        softirq = [r['softirq_percent'] for r in self.results]
+        thru = [r['throughput_mbps'] for r in self.results]
+        loss = [r['loss_percent'] for r in self.results]
+        siq = [r['softirq_percent'] for r in self.results]
         
-        std_res = [r for r in self.results if "Std" in r['mode']]
-        ddos_res = [r for r in self.results if "DDoS" in r['mode']]
+        x = np.arange(len(modes))
+        width = 0.25
         
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
         
-        def draw(ax, data, title):
-            labels = [r['mode'].split('_')[0] for r in data]
-            x = np.arange(len(labels))
-            width = 0.35
-            b1 = ax.bar(x - width/2, [r['throughput_mbps'] for r in data], width, label='Mbps', color='skyblue')
-            ax2 = ax.twinx()
-            b2 = ax2.bar(x + width/2, [r['softirq_percent'] for r in data], width, label='SIQ%', color='salmon')
-            ax.set_title(title)
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels)
-            ax.legend([b1, b2], ['Mbps', 'SoftIRQ %'], loc='upper left')
+        # Top Plot: Throughput and SoftIRQ
+        b1 = ax1.bar(x - width, thru, width, label='Throughput (Mbps)', color='#3498db')
+        ax1.set_ylabel('Throughput (Mbps)', color='#3498db', fontsize=12, fontweight='bold')
+        ax1.tick_params(axis='y', labelcolor='#3498db')
+        
+        ax1_twin = ax1.twinx()
+        b2 = ax1_twin.bar(x, siq, width, label='SoftIRQ %', color='#e74c3c', alpha=0.7)
+        ax1_twin.set_ylabel('CPU SoftIRQ %', color='#e74c3c', fontsize=12, fontweight='bold')
+        ax1_twin.tick_params(axis='y', labelcolor='#e74c3c')
+        ax1_twin.set_ylim(0, 100)
+        
+        ax1.set_title('Throughput vs CPU Overhead (iptables vs XDP)', fontsize=16, pad=20)
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(modes, rotation=15, ha='right')
+        ax1.legend([b1, b2], ['Throughput', 'SoftIRQ %'], loc='upper left')
+        ax1.grid(axis='y', linestyle='--', alpha=0.3)
 
-        if std_res: draw(ax1, std_res, "Standard (1400B)")
-        if ddos_res: draw(ax2, ddos_res, "DDoS (64B)")
-        plt.tight_layout()
-        plt.savefig('benchmark_results.png')
+        # Bottom Plot: Packet Loss
+        b3 = ax2.bar(x, loss, width*1.5, label='Packet Loss %', color='#f1c40f')
+        ax2.set_ylabel('Packet Loss %', fontsize=12, fontweight='bold')
+        ax2.set_title('Reliability: Packet Loss Comparison', fontsize=16, pad=20)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(modes, rotation=15, ha='right')
+        ax2.set_ylim(0, max(loss) * 1.2 if loss else 100)
+        ax2.grid(axis='y', linestyle='--', alpha=0.3)
+        
+        # Annotate loss values
+        for rect in b3:
+            height = rect.get_height()
+            ax2.annotate(f'{height}%', xy=(rect.get_x() + rect.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom')
+
+        plt.tight_layout(pad=4.0)
+        plt.savefig('benchmark_results.png', dpi=300)
+        print(f"{Colors.GREEN}[+] High-res graph saved to benchmark_results.png{Colors.END}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
