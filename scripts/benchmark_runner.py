@@ -5,23 +5,35 @@ import json
 import os
 import sys
 import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 from typing import Dict, List
 
+class Colors:
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
+
 class BenchmarkOrchestrator:
-    def __init__(self):
+    def __init__(self, target_iface: str = None):
         self.br = "br0"
         self.ns_config = {
             "ns1": {"ip": "10.0.0.1", "mac": "00:00:00:00:00:01", "veth": "veth_ns1"},
             "ns2": {"ip": "10.0.0.2", "mac": "00:00:00:00:00:02", "veth": "veth_ns2"},
             "ns3": {"ip": "10.0.0.3", "mac": "00:00:00:00:00:03", "veth": "veth_ns3"},
         }
+        self.target_iface = target_iface
         self.results = []
+        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
     def run(self, cmd: str, check: bool = True):
         return subprocess.run(cmd, shell=True, text=True, capture_output=True, check=check)
 
     def setup_network(self):
-        print("🏗️  Building Network Namespaces...")
+        print(f"{Colors.BLUE}[*] Building Network Namespaces...{Colors.END}")
         self.run(f"ip link add {self.br} type bridge", check=False)
         self.run(f"ip link set {self.br} up")
 
@@ -42,92 +54,161 @@ class BenchmarkOrchestrator:
             self.run(f"ip link set {v_root} up")
 
     def cleanup(self):
-        print("🧹 Cleaning up namespaces and bridges...")
+        print(f"{Colors.YELLOW}[!] Cleaning up...{Colors.END}")
         for ns in self.ns_config:
             self.run(f"ip netns del {ns}", check=False)
         self.run(f"ip link del {self.br}", check=False)
         self.run("pkill iperf3", check=False)
         self.run("pkill hping3", check=False)
+        if self.target_iface:
+             self.run(f"ip link set dev {self.target_iface} xdp off 2>/dev/null", check=False)
 
-    def run_test(self, mode: str):
-        print(f"\n🚀 Starting Benchmark: [{mode}]")
+    def get_cpu_softirq(self):
+        res = self.run("mpstat 1 5 -o JSON")
+        try:
+            data = json.loads(res.stdout)
+            stats = data['sysstat']['hosts'][0]['statistics']
+            softirqs = [s['cpu-load'][0]['soft'] for s in stats]
+            return round(sum(softirqs) / len(softirqs), 2)
+        except:
+            return 0.0
+
+    def run_test(self, mode: str, packet_size: int = 64):
+        label = "DDoS" if packet_size <= 64 else "Std"
+        print(f"\n{Colors.BOLD}[>] Starting Benchmark: [{mode}] ({label}){Colors.END}")
         
-        # Reset rules
+        # Determine target interface
+        # If testing XDP, we target the attacker's entry point
+        v_ns3_root = f"{self.ns_config['ns3']['veth']}_root"
+        iface = self.target_iface if self.target_iface and mode == "xdp" else v_ns3_root
+
         self.run("iptables -F")
-        # TODO: Detach XDP
+        self.run(f"ip link set dev {iface} xdp off 2>/dev/null", check=False)
         
         if mode == "iptables":
-            print("🛡️  Applying iptables rule...")
+            print(f"{Colors.GREEN}[+] Applying 1000 iptables rules (Real-world scaling)...{Colors.END}")
+            # Add 1000 dummy rules to slow down the linear scan
+            for i in range(1000):
+                self.run(f"iptables -A FORWARD -s 1.2.3.{i%255} -j ACCEPT")
+            
+            # The actual drop rule at the end
             mac3 = self.ns_config["ns3"]["mac"]
             self.run(f"iptables -A FORWARD -m mac --mac-source {mac3} -j DROP")
         elif mode == "xdp":
-            print("🛡️  Loading XDP-L2-Guard...")
-            # Placeholder for loader call
-            # veth_root_ns3 = "veth_ns3_root"
-            # self.run(f"python3 src/control_plane/loader.py -i {veth_root_ns3} ...")
-            time.sleep(2)
+            print(f"{Colors.GREEN}[+] Loading XDP-L2-Guard (O(1) Map Lookup)...{Colors.END}")
+            loader_path = os.path.join(self.project_root, "src/control_plane/loader.py")
+            self.loader_proc = subprocess.Popen(
+                ["sudo", "python3", loader_path, "-i", iface, "--generic"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            time.sleep(4)
+            print(f"{Colors.GREEN}[+] Injecting Attacker IP into Map...{Colors.END}")
+            self.run("sudo bpftool map update name blacklist_ips key 0x03 0x00 0x00 0x0a value 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00")
 
-        # Start iperf3 server in ns1
-        print("📡 Starting iperf3 server in ns1...")
         subprocess.Popen(["ip", "netns", "exec", "ns1", "iperf3", "-s", "-D"])
         time.sleep(1)
 
-        # Start Flood from ns3
-        print("🔥 Starting UDP Flood from ns3...")
+        print(f"{Colors.RED}[!] Starting 12-THREAD {packet_size}B Flood...{Colors.END}")
         ip1 = self.ns_config["ns1"]["ip"]
-        flood_proc = subprocess.Popen([
-            "ip", "netns", "exec", "ns3", 
-            "hping3", "--flood", "--udp", "-a", self.ns_config["ns3"]["ip"], ip1
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        flood_procs = []
+        for _ in range(12): # Max out user's threads
+            p = subprocess.Popen([
+                "ip", "netns", "exec", "ns3", 
+                "hping3", "--flood", "--udp", "-d", str(packet_size), "-a", self.ns_config["ns3"]["ip"], ip1
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            flood_procs.append(p)
 
         try:
-            print("📊 Measuring Throughput (ns2 -> ns1)...")
-            iperf_res = self.run(f"ip netns exec ns2 iperf3 -c {ip1} -t 10 --json")
+            print(f"{Colors.BLUE}[*] Measuring CPU SoftIRQ (5s)...{Colors.END}")
+            softirq_val = self.get_cpu_softirq()
+            
+            print(f"{Colors.BLUE}[*] Measuring Performance...{Colors.END}")
+            iperf_res = self.run(f"ip netns exec ns2 iperf3 -c {ip1} -t 5 -u -b 10G --json")
             data = json.loads(iperf_res.stdout)
-            bps = data['end']['sum_received']['bits_per_second']
-            mbps = bps / 1_000_000
-
-            print("📊 Measuring Latency...")
-            ping_res = self.run(f"ip netns exec ns2 ping {ip1} -c 10 -q")
-            # Extract avg latency from: rtt min/avg/max/mdev = 0.038/0.054/0.071/0.010 ms
-            avg_lat = ping_res.stdout.split('/')[-3]
+            
+            mbps = data['end']['sum']['bits_per_second'] / 1_000_000
+            loss = data['end']['sum']['lost_percent']
+            avg_lat = self.run(f"ip netns exec ns2 ping {ip1} -c 5 -q").stdout.split('/')[-3]
 
             self.results.append({
-                "mode": mode,
+                "mode": f"{mode}_{label}",
                 "throughput_mbps": round(mbps, 2),
-                "latency_ms": avg_lat
+                "latency_ms": avg_lat,
+                "loss_percent": round(loss, 2),
+                "softirq_percent": softirq_val
             })
-            
-            print(f"✅ Results: {mbps:.2f} Mbps | {avg_lat} ms")
+            print(f"{Colors.GREEN}[+] {mbps:.2f} Mbps | Lat: {avg_lat}ms | Loss: {loss:.2f}% | SIQ: {softirq_val}%{Colors.END}")
 
         finally:
-            flood_proc.terminate()
+            for p in flood_procs: p.terminate()
             self.run("pkill iperf3", check=False)
+            if mode == "xdp": self.run(f"ip link set dev {iface} xdp off", check=False)
 
     def report(self):
-        print("\n" + "="*40)
-        print(f"{'MODE':<15} | {'THROUGHPUT':<12} | {'LATENCY':<10}")
-        print("-" * 40)
+        print("\n" + "="*60)
+        print(f"{'MODE':<15} | {'Mbps':>8} | {'ms':>6} | {'LOSS%':>6} | {'SIQ%' :>6}")
+        print("-" * 60)
         for r in self.results:
-            print(f"{r['mode']:<15} | {r['throughput_mbps']:>7} Mbps | {r['latency_ms']:>7} ms")
-        print("="*40)
+            print(f"{r['mode']:<15} | {r['throughput_mbps']:>8} | {r['latency_ms']:>6} | {r['loss_percent']:>5}% | {r['softirq_percent']:>5}%")
+        print("="*60)
+        self.plot_results()
+
+    def plot_results(self):
+        if not self.results: return
+
+        # Group data by test type (Std vs DDoS)
+        std_results = [r for r in self.results if "Std" in r['mode']]
+        ddos_results = [r for r in self.results if "DDoS" in r['mode']]
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+        def draw_group(ax, data, title):
+            labels = [r['mode'].split('_')[0] for r in data]
+            thru = [r['throughput_mbps'] for r in data]
+            siq = [r['softirq_percent'] for r in data]
+            
+            x = np.arange(len(labels))
+            width = 0.35
+            
+            # Throughput
+            b1 = ax.bar(x - width/2, thru, width, label='Throughput (Mbps)', color='skyblue')
+            ax.set_ylabel('Mbps', color='blue')
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels)
+            
+            # SoftIRQ
+            ax_right = ax.twinx()
+            b2 = ax_right.bar(x + width/2, siq, width, label='SoftIRQ %', color='salmon')
+            ax_right.set_ylabel('CPU SoftIRQ %', color='red')
+            ax_right.set_ylim(0, 100)
+            
+            ax.legend([b1, b2], ['Throughput', 'SoftIRQ %'], loc='upper left')
+
+        if std_results:
+            draw_group(ax1, std_results, "Standard MTU Flood (1400B)")
+        if ddos_results:
+            draw_group(ax2, ddos_results, "DDoS PPS Stress (64B)")
+
+        plt.tight_layout(pad=3.0)
+        plt.savefig('benchmark_results.png')
+        print(f"\n{Colors.GREEN}[+] Graph improved: benchmark_results.png{Colors.END}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("-i", "--interface", help="Target physical NIC")
     args = parser.parse_args()
 
-    bench = BenchmarkOrchestrator()
-    if args.cleanup:
-        bench.cleanup()
-        sys.exit(0)
-
+    bench = BenchmarkOrchestrator(target_iface=args.interface)
     try:
-        bench.cleanup() # Initial sweep
+        bench.cleanup()
         bench.setup_network()
-        bench.run_test("baseline") # No rules
-        bench.run_test("iptables")
-        # bench.run_test("xdp")
+        
+        # Test Suite
+        for mode in ["iptables", "xdp"]:
+            for size in [1400, 64]:
+                bench.run_test(mode, packet_size=size)
+        
         bench.report()
     finally:
         bench.cleanup()
