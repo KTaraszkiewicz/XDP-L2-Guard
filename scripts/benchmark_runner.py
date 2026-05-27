@@ -58,8 +58,8 @@ class BenchmarkOrchestrator:
         for ns in self.ns_config:
             self.run(f"ip netns del {ns}", check=False)
         self.run(f"ip link del {self.br}", check=False)
-        self.run("pkill iperf3", check=False)
-        self.run("pkill hping3", check=False)
+        self.run("sudo pkill -9 iperf3", check=False)
+        self.run("sudo pkill -9 hping3", check=False)
         if self.target_iface:
              self.run(f"ip link set dev {self.target_iface} xdp off 2>/dev/null", check=False)
 
@@ -77,45 +77,43 @@ class BenchmarkOrchestrator:
         label = "DDoS" if packet_size <= 64 else "Std"
         print(f"\n{Colors.BOLD}[>] Starting Benchmark: [{mode}] ({label}){Colors.END}")
         
-        # Determine target interface
-        # If testing XDP, we target the attacker's entry point
         v_ns3_root = f"{self.ns_config['ns3']['veth']}_root"
         iface = self.target_iface if self.target_iface and mode == "xdp" else v_ns3_root
 
-        self.run("iptables -F")
-        self.run(f"ip link set dev {iface} xdp off 2>/dev/null", check=False)
+        self.run("sudo iptables -F")
+        self.run(f"sudo ip link set dev {iface} xdp off 2>/dev/null", check=False)
         
         if mode == "iptables":
-            print(f"{Colors.GREEN}[+] Applying 1000 iptables rules (Real-world scaling)...{Colors.END}")
-            # Add 1000 dummy rules to slow down the linear scan
+            print(f"{Colors.GREEN}[+] Applying 1000 iptables rules (Linear Scan)...{Colors.END}")
             for i in range(1000):
-                self.run(f"iptables -A FORWARD -s 1.2.3.{i%255} -j ACCEPT")
-            
-            # The actual drop rule at the end
+                self.run(f"sudo iptables -A FORWARD -s 1.2.3.{i%255} -j ACCEPT")
             mac3 = self.ns_config["ns3"]["mac"]
-            self.run(f"iptables -A FORWARD -m mac --mac-source {mac3} -j DROP")
+            self.run(f"sudo iptables -A FORWARD -m mac --mac-source {mac3} -j DROP")
         elif mode == "xdp":
             print(f"{Colors.GREEN}[+] Loading XDP-L2-Guard (O(1) Map Lookup)...{Colors.END}")
             loader_path = os.path.join(self.project_root, "src/control_plane/loader.py")
-            self.loader_proc = subprocess.Popen(
+            # Attach and exit monitoring loop quickly
+            attach_proc = subprocess.Popen(
                 ["sudo", "python3", loader_path, "-i", iface, "--generic"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-            time.sleep(4)
+            time.sleep(5)
+            attach_proc.kill()
+            
             print(f"{Colors.GREEN}[+] Injecting Attacker IP into Map...{Colors.END}")
             self.run("sudo bpftool map update name blacklist_ips key 0x03 0x00 0x00 0x0a value 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00")
 
-        subprocess.Popen(["ip", "netns", "exec", "ns1", "iperf3", "-s", "-D"])
+        subprocess.Popen(["ip", "netns", "exec", "ns1", "iperf3", "-s", "-D"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
 
         print(f"{Colors.RED}[!] Starting 12-THREAD {packet_size}B Flood...{Colors.END}")
         ip1 = self.ns_config["ns1"]["ip"]
         flood_procs = []
-        for _ in range(12): # Max out user's threads
+        for _ in range(12):
             p = subprocess.Popen([
                 "ip", "netns", "exec", "ns3", 
                 "hping3", "--flood", "--udp", "-d", str(packet_size), "-a", self.ns_config["ns3"]["ip"], ip1
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
             flood_procs.append(p)
 
         try:
@@ -140,9 +138,10 @@ class BenchmarkOrchestrator:
             print(f"{Colors.GREEN}[+] {mbps:.2f} Mbps | Lat: {avg_lat}ms | Loss: {loss:.2f}% | SIQ: {softirq_val}%{Colors.END}")
 
         finally:
-            for p in flood_procs: p.terminate()
-            self.run("pkill iperf3", check=False)
-            if mode == "xdp": self.run(f"ip link set dev {iface} xdp off", check=False)
+            for p in flood_procs: p.kill()
+            self.run("sudo pkill -9 hping3", check=False)
+            self.run("sudo pkill -9 iperf3", check=False)
+            if mode == "xdp": self.run(f"sudo ip link set dev {iface} xdp off", check=False)
 
     def report(self):
         print("\n" + "="*60)
@@ -155,60 +154,43 @@ class BenchmarkOrchestrator:
 
     def plot_results(self):
         if not self.results: return
-
-        # Group data by test type (Std vs DDoS)
-        std_results = [r for r in self.results if "Std" in r['mode']]
-        ddos_results = [r for r in self.results if "DDoS" in r['mode']]
+        modes = [r['mode'] for r in self.results]
+        throughput = [r['throughput_mbps'] for r in self.results]
+        softirq = [r['softirq_percent'] for r in self.results]
+        
+        std_res = [r for r in self.results if "Std" in r['mode']]
+        ddos_res = [r for r in self.results if "DDoS" in r['mode']]
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-
-        def draw_group(ax, data, title):
+        
+        def draw(ax, data, title):
             labels = [r['mode'].split('_')[0] for r in data]
-            thru = [r['throughput_mbps'] for r in data]
-            siq = [r['softirq_percent'] for r in data]
-            
             x = np.arange(len(labels))
             width = 0.35
-            
-            # Throughput
-            b1 = ax.bar(x - width/2, thru, width, label='Throughput (Mbps)', color='skyblue')
-            ax.set_ylabel('Mbps', color='blue')
-            ax.set_title(title, fontsize=14, fontweight='bold')
+            b1 = ax.bar(x - width/2, [r['throughput_mbps'] for r in data], width, label='Mbps', color='skyblue')
+            ax2 = ax.twinx()
+            b2 = ax2.bar(x + width/2, [r['softirq_percent'] for r in data], width, label='SIQ%', color='salmon')
+            ax.set_title(title)
             ax.set_xticks(x)
             ax.set_xticklabels(labels)
-            
-            # SoftIRQ
-            ax_right = ax.twinx()
-            b2 = ax_right.bar(x + width/2, siq, width, label='SoftIRQ %', color='salmon')
-            ax_right.set_ylabel('CPU SoftIRQ %', color='red')
-            ax_right.set_ylim(0, 100)
-            
-            ax.legend([b1, b2], ['Throughput', 'SoftIRQ %'], loc='upper left')
+            ax.legend([b1, b2], ['Mbps', 'SoftIRQ %'], loc='upper left')
 
-        if std_results:
-            draw_group(ax1, std_results, "Standard MTU Flood (1400B)")
-        if ddos_results:
-            draw_group(ax2, ddos_results, "DDoS PPS Stress (64B)")
-
-        plt.tight_layout(pad=3.0)
+        if std_res: draw(ax1, std_res, "Standard (1400B)")
+        if ddos_res: draw(ax2, ddos_res, "DDoS (64B)")
+        plt.tight_layout()
         plt.savefig('benchmark_results.png')
-        print(f"\n{Colors.GREEN}[+] Graph improved: benchmark_results.png{Colors.END}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--interface", help="Target physical NIC")
     args = parser.parse_args()
-
     bench = BenchmarkOrchestrator(target_iface=args.interface)
     try:
         bench.cleanup()
         bench.setup_network()
-        
-        # Test Suite
         for mode in ["iptables", "xdp"]:
             for size in [1400, 64]:
                 bench.run_test(mode, packet_size=size)
-        
         bench.report()
     finally:
         bench.cleanup()
