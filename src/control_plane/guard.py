@@ -99,11 +99,12 @@ def main():
         }[args.jump]
 
         new_ip_int = 0
-        if args.jump == "NAT":
-            if not args.to_destination:
+        if args.jump in ["NAT", "REDIRECT"]:
+            if args.to_destination:
+                new_ip_int = struct.unpack("<I", socket.inet_aton(args.to_destination))[0]
+            elif args.jump == "NAT":
                 print("Error: NAT requires --to-destination <IP>")
                 sys.exit(1)
-            new_ip_int = struct.unpack("<I", socket.inet_aton(args.to_destination))[0]
 
         ifindex = 0
         if args.jump == "REDIRECT":

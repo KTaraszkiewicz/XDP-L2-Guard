@@ -25,7 +25,7 @@ case ${ACTION,,} in
         sudo $GUARD -A -s 10.0.0.2 -j TX
         ;;
     redirect)
-        sudo $GUARD -A -s 10.0.0.2 -j REDIRECT --oif v1-3
+        sudo $GUARD -A -s 10.0.0.2 -j REDIRECT --oif v1-3 --to-destination 10.0.0.3
         ;;
     nat)
         sudo $GUARD -A -s 10.0.0.2 -j NAT --to-destination 10.0.0.3

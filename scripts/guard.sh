@@ -29,8 +29,18 @@ pack_u32() {
 }
 
 # Find Map IDs
-ACT_MAP_ID=$(bpftool map list 2>/dev/null | grep -m 1 action_map | awk -F: '{print $1}')
-DEV_MAP_ID=$(bpftool map list 2>/dev/null | grep -m 1 dev_map | awk -F: '{print $1}')
+ACT_MAP_IDS=$(bpftool map list 2>/dev/null | grep action_map | awk -F: '{print $1}')
+DEV_MAP_IDS=$(bpftool map list 2>/dev/null | grep dev_map | awk -F: '{print $1}')
+
+# Pick one for listing (first one with elements, or just first one)
+ACT_MAP_ID_LIST=""
+for id in $ACT_MAP_IDS; do
+    [ -z "$ACT_MAP_ID_LIST" ] && ACT_MAP_ID_LIST=$id
+    if bpftool --json map dump id "$id" | jq -e 'length > 0' >/dev/null 2>&1; then
+        ACT_MAP_ID_LIST=$id
+        break
+    fi
+done
 
 usage() {
     echo "Usage: $0 [options]"
@@ -58,7 +68,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -z "$ACT_MAP_ID" ]; then
+if [ -z "$ACT_MAP_IDS" ]; then
     echo -e "${RED}Error: XDP maps not found. Is loader running?${NC}"
     exit 1
 fi
@@ -66,35 +76,25 @@ fi
 if [ "$MODE" == "LIST" ]; then
     echo -e "${BLUE}SOURCE IP       | ACTION     | DETAILS${NC}"
     echo "------------------------------------------------"
-    # Simple list using bpftool output
-    bpftool map dump id "$ACT_MAP_ID" | grep -v "\[" | grep -v "\]" | while read -r line; do
-        if [[ $line == *"key:"* ]]; then
-            # Extract key bytes
-            key=$(echo "$line" | cut -d: -f2- | tr -d ' ,')
-            ip=$(printf "%d.%d.%d.%d" 0x${key:0:2} 0x${key:2:2} 0x${key:4:2} 0x${key:6:2})
-            read -r next_line
-            # Extract value bytes (target is first 4 bytes)
-            val=$(echo "$next_line" | cut -d: -f2- | tr -d ' ,')
-            t_hex=${val:0:8}
-            # Little Endian to Int
-            t_val=$(( 16#${t_hex:6:2}${t_hex:4:2}${t_hex:2:2}${t_hex:0:2} ))
-            
-            actions=("PASS" "DROP" "TX" "REDIRECT" "NAT")
-            act_str=${actions[$t_val]}
-            
-            details=""
-            if [ "$t_val" -eq "$ACTION_NAT" ]; then
-                n_hex=${val:8:8}
-                nip=$(printf "%d.%d.%d.%d" 0x${n_hex:0:2} 0x${n_hex:2:2} 0x${n_hex:4:2} 0x${n_hex:6:2})
-                details="to $nip"
-            elif [ "$t_val" -eq "$ACTION_REDIRECT" ]; then
-                i_hex=${val:16:8}
-                idx=$(( 16#${i_hex:6:2}${i_hex:4:2}${i_hex:2:2}${i_hex:0:2} ))
-                details="to ifindex $idx"
-            fi
-            
-            printf "%-15s | %-10s | %s\n" "$ip" "$act_str" "$details"
+
+    [ -z "$ACT_MAP_ID_LIST" ] && exit 0
+
+    # Use JSON output for reliable parsing
+    bpftool --json map dump id "$ACT_MAP_ID_LIST" | jq -r '.[] | .formatted | [.key, .value.target, .value.new_ip, .value.ifindex] | @tsv' 2>/dev/null | while IFS=$'\t' read -r key target new_ip ifindex; do
+        # Convert decimal IP (Little Endian from map) to dotted string
+        ip=$(printf "%d.%d.%d.%d" $((key & 0xFF)) $(((key >> 8) & 0xFF)) $(((key >> 16) & 0xFF)) $(((key >> 24) & 0xFF)))
+
+        actions=("PASS" "DROP" "TX" "REDIRECT" "NAT")
+        act_str=${actions[$target]}
+        details=""
+        if [ "$target" -eq "$ACTION_NAT" ]; then
+            nip=$(printf "%d.%d.%d.%d" $((new_ip & 0xFF)) $(((new_ip >> 8) & 0xFF)) $(((new_ip >> 16) & 0xFF)) $(((new_ip >> 24) & 0xFF)))
+            details="to $nip"
+        elif [ "$target" -eq "$ACTION_REDIRECT" ]; then
+            details="to ifindex $ifindex"
         fi
+        
+        printf "%-15s | %-10s | %s\n" "$ip" "$act_str" "$details"
     done
     exit 0
 fi
@@ -113,10 +113,37 @@ if [ "$MODE" == "ADD" ]; then
         REDIRECT) 
             T_VAL=$ACTION_REDIRECT 
             [ -z "$OIF" ] && echo "Error: --oif required" && exit 1
-            OIF_IDX=$(cat "/sys/class/net/$OIF/ifindex")
+            
+            # Optional NAT in redirect
+            if [ -n "$NAT_IP" ]; then
+                NAT_HEX=$(ip_to_hex "$NAT_IP")
+            fi
+            
+            # Find ifindex and the namespace it belongs to
+            OIF_IDX=$(ip -o link show dev "$OIF" 2>/dev/null | awk -F': ' '{print $1}')
+            OIF_NS=""
+            
+            if [ -z "$OIF_IDX" ]; then
+                for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+                    OIF_IDX=$(ip netns exec "$ns" ip -o link show dev "$OIF" 2>/dev/null | awk -F': ' '{print $1}')
+                    if [ -n "$OIF_IDX" ]; then
+                        OIF_NS="$ns"
+                        break
+                    fi
+                done
+            fi
+            
+            [ -z "$OIF_IDX" ] && echo "Error: Interface $OIF not found" && exit 1
             OIF_HEX=$(pack_u32 "$OIF_IDX")
-            # Update dev_map
-            bpftool map update id "$DEV_MAP_ID" key hex "$OIF_HEX" value hex "$OIF_HEX"
+            
+            # Update all dev_maps
+            for id in $DEV_MAP_IDS; do
+                if [ -n "$OIF_NS" ]; then
+                    ip netns exec "$OIF_NS" bpftool map update id "$id" key hex $OIF_HEX value hex $OIF_HEX 2>/dev/null
+                else
+                    bpftool map update id "$id" key hex $OIF_HEX value hex $OIF_HEX 2>/dev/null
+                fi
+            done
             ;;
         NAT)
             T_VAL=$ACTION_NAT
@@ -127,17 +154,34 @@ if [ "$MODE" == "ADD" ]; then
 
     SRC_HEX=$(ip_to_hex "$SRC_IP")
     T_HEX=$(pack_u32 "$T_VAL")
-    
-    # struct action_cfg: target(4), new_ip(4), ifindex(4)
     VAL_HEX="$T_HEX $NAT_HEX $OIF_HEX"
 
-    bpftool map update id "$ACT_MAP_ID" key hex "$SRC_HEX" value hex "$VAL_HEX"
-    echo -e "${GREEN}Rule added: $SRC_IP -> $TARGET${NC}"
+    SUCCESS=0
+    for id in $ACT_MAP_IDS; do
+        if bpftool map update id "$id" key hex $SRC_HEX value hex $VAL_HEX; then
+            SUCCESS=1
+        fi
+    done
+
+    if [ "$SUCCESS" -eq 1 ]; then
+        echo -e "${GREEN}Rule added: $SRC_IP -> $TARGET${NC}"
+    else
+        echo -e "${RED}Error: Failed to update map.${NC}"
+    fi
 
 elif [ "$MODE" == "DEL" ]; then
     [ -z "$SRC_IP" ] && usage
-    bpftool map delete id "$ACT_MAP_ID" key hex "$(ip_to_hex "$SRC_IP")"
-    echo -e "${GREEN}Rule deleted for $SRC_IP${NC}"
+    SUCCESS=0
+    for id in $ACT_MAP_IDS; do
+        if bpftool map delete id "$id" key hex $(ip_to_hex "$SRC_IP"); then
+            SUCCESS=1
+        fi
+    done
+    if [ "$SUCCESS" -eq 1 ]; then
+        echo -e "${GREEN}Rule deleted for $SRC_IP${NC}"
+    else
+        echo -e "${RED}Error: Failed to delete rule.${NC}"
+    fi
 else
     usage
 fi
