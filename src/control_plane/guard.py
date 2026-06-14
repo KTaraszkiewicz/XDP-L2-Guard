@@ -86,8 +86,8 @@ def main():
         return
 
     if args.append:
-        if not args.source or not args.jump:
-            print("Error: -A requires -s <IP> and -j <ACTION>")
+        if not args.destination or not args.jump:
+            print("Error: -A requires -d <IP> and -j <ACTION>")
             sys.exit(1)
 
         target = {
@@ -121,21 +121,21 @@ def main():
 
         # struct action_cfg: target(4), new_ip(4), ifindex(4)
         val_hex = " ".join([f"{b:02x}" for b in struct.pack("<III", target, new_ip_int, ifindex)])
-        res = run_cmd(f"bpftool map update id {act_map_id} key hex {ip_to_hex(args.source)} value hex {val_hex}")
+        res = run_cmd(f"bpftool map update id {act_map_id} key hex {ip_to_hex(args.destination)} value hex {val_hex}")
         
         if res.returncode == 0:
-            print(f"Added rule: {args.source} -> {args.jump}")
+            print(f"Added rule: {args.destination} -> {args.jump}")
         else:
             print(f"Error adding rule: {res.stderr}")
 
     elif args.delete:
-        if not args.source:
-            print("Error: -D requires -s <IP>")
+        if not args.destination:
+            print("Error: -D requires -d <IP>")
             sys.exit(1)
         
-        res = run_cmd(f"bpftool map delete id {act_map_id} key hex {ip_to_hex(args.source)}")
+        res = run_cmd(f"bpftool map delete id {act_map_id} key hex {ip_to_hex(args.destination)}")
         if res.returncode == 0:
-            print(f"Deleted rule for {args.source}")
+            print(f"Deleted rule for {args.destination}")
         else:
             print(f"Error deleting rule: {res.stderr}")
 

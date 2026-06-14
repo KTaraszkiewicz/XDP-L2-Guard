@@ -18,6 +18,8 @@ class Colors:
     END = "\033[0m"
 
 class BenchmarkOrchestrator:
+    NUM_CORES = 4
+
     def __init__(self, target_iface: str = None):
         self.br = "br0"
         self.ns_config = {
@@ -194,3 +196,4 @@ if __name__ == "__main__":
         bench.report()
     finally:
         bench.cleanup()
+leanup()

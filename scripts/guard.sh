@@ -15,7 +15,7 @@ ACTION_TX=2
 ACTION_REDIRECT=3
 ACTION_NAT=4
 
-# Helper: IP to Hex (Network Byte Order for key)
+# Helper: IP to Hex (Big Endian)
 ip_to_hex() {
     local ip=$1
     IFS=. read -r a b c d <<< "$ip"
@@ -64,21 +64,26 @@ if [ -z "$ACT_MAP_ID" ]; then
 fi
 
 if [ "$MODE" == "LIST" ]; then
-    echo -e "${BLUE}SOURCE IP       | ACTION     | DETAILS${NC}"
-    echo "------------------------------------------------"
+    echo -e "${BLUE}SOURCE IP       | ACTION     | DROPPED    | DETAILS${NC}"
+    echo "---------------------------------------------------------"
     # Simple list using bpftool output
     bpftool map dump id "$ACT_MAP_ID" | grep -v "\[" | grep -v "\]" | while read -r line; do
         if [[ $line == *"key:"* ]]; then
             # Extract key bytes
             key=$(echo "$line" | cut -d: -f2- | tr -d ' ,')
+            # Decode as Big Endian
             ip=$(printf "%d.%d.%d.%d" 0x${key:0:2} 0x${key:2:2} 0x${key:4:2} 0x${key:6:2})
             read -r next_line
-            # Extract value bytes (target is first 4 bytes)
+            # Extract value bytes: target(4), nip(4), idx(4), count(8)
             val=$(echo "$next_line" | cut -d: -f2- | tr -d ' ,')
             t_hex=${val:0:8}
-            # Little Endian to Int
             t_val=$(( 16#${t_hex:6:2}${t_hex:4:2}${t_hex:2:2}${t_hex:0:2} ))
             
+            # Count is at offset 32 hex (16 bytes) -> chars 32 to 48
+            c_hex=${val:32:16}
+            # Little Endian 8-byte to Int
+            c_val=$(( 16#${c_hex:14:2}${c_hex:12:2}${c_hex:10:2}${c_hex:8:2}${c_hex:6:2}${c_hex:4:2}${c_hex:2:2}${c_hex:0:2} ))
+
             actions=("PASS" "DROP" "TX" "REDIRECT" "NAT")
             act_str=${actions[$t_val]}
             
@@ -93,7 +98,7 @@ if [ "$MODE" == "LIST" ]; then
                 details="to ifindex $idx"
             fi
             
-            printf "%-15s | %-10s | %s\n" "$ip" "$act_str" "$details"
+            printf "%-15s | %-10s | %-10s | %s\n" "$ip" "$act_str" "$c_val" "$details"
         fi
     done
     exit 0
@@ -105,6 +110,7 @@ if [ "$MODE" == "ADD" ]; then
     T_VAL=0
     NAT_HEX="00 00 00 00"
     OIF_HEX="00 00 00 00"
+    CNT_HEX="00 00 00 00 00 00 00 00"
 
     case ${TARGET^^} in
         PASS) T_VAL=$ACTION_PASS ;;
@@ -128,10 +134,12 @@ if [ "$MODE" == "ADD" ]; then
     SRC_HEX=$(ip_to_hex "$SRC_IP")
     T_HEX=$(pack_u32 "$T_VAL")
     
-    # struct action_cfg: target(4), new_ip(4), ifindex(4)
-    VAL_HEX="$T_HEX $NAT_HEX $OIF_HEX"
+    # struct action_cfg: target(4), new_ip(4), ifindex(4), [padding(4)], count(8)
+    PAD_HEX="00 00 00 00"
+    CNT_HEX="00 00 00 00 00 00 00 00"
+    VAL_HEX="$T_HEX $NAT_HEX $OIF_HEX $PAD_HEX $CNT_HEX"
 
-    bpftool map update id "$ACT_MAP_ID" key hex "$SRC_HEX" value hex "$VAL_HEX"
+    bpftool map update id "$ACT_MAP_ID" key hex $SRC_HEX value hex $VAL_HEX
     echo -e "${GREEN}Rule added: $SRC_IP -> $TARGET${NC}"
 
 elif [ "$MODE" == "DEL" ]; then

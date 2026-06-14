@@ -13,6 +13,7 @@ struct action_cfg {
     __u32 target;
     __u32 new_ip;
     __u32 ifindex;
+    __u64 dropped_packets;
 };
 
 struct {
@@ -28,6 +29,13 @@ struct {
     __uint(value_size, sizeof(__u32));
     __uint(max_entries, 256);
 } dev_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 1);
+} total_dropped SEC(".maps");
 
 static __always_inline void swap_mac(struct ethhdr *eth) {
     __u8 tmp[ETH_ALEN];
@@ -56,17 +64,23 @@ int xdp_drop_logic(struct xdp_md *ctx) {
     struct iphdr *ip = data + sizeof(struct ethhdr);
     BOUNDS_CHECK(ip, struct iphdr, data_end);
 
-    __u32 src_ip = ip->saddr;
-    struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &src_ip);
+    __u32 dst_ip = bpf_ntohl(ip->daddr);
+    struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &dst_ip);
+    
+    bpf_printk("XDP: lookup ip=%pI4 hex=%x cfg=%p", &dst_ip, dst_ip, cfg);
+
     if (!cfg) {
         return XDP_PASS;
     }
 
-    bpf_printk("XDP: src_ip=%pI4 action=%u", &src_ip, cfg->target);
-
     switch (cfg->target) {
-        case ACTION_DROP:
+        case ACTION_DROP: {
+            __u32 key = 0;
+            __u64 *val = bpf_map_lookup_elem(&total_dropped, &key);
+            if (val) __sync_fetch_and_add(val, 1);
+            __sync_fetch_and_add(&cfg->dropped_packets, 1);
             return XDP_DROP;
+        }
 
         case ACTION_TX: {
             if (ip->protocol == IPPROTO_ICMP) {

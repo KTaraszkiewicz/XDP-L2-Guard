@@ -74,8 +74,8 @@ def main():
     try:
         while True:
             time.sleep(1)
-            # Dump blacklist_ips map in JSON format
-            dump_res = run_cmd("bpftool -j map dump name blacklist_ips")
+            # Dump action_map map in JSON format
+            dump_res = run_cmd("bpftool -j map dump name action_map")
             
             if dump_res.returncode == 0 and dump_res.stdout.strip():
                 map_data = json.loads(dump_res.stdout)
@@ -85,16 +85,21 @@ def main():
                     logger.info("Active drops at the eXpress Data Path layer:")
                     
                     for item in map_data:
-                        # bpftool returns hex arrays, e.g., ["0xc0", "0xa8", "0x01", "0x64"]
-                        key_bytes = [int(x, 16) for x in item["key"]]
-                        val_bytes = [int(x, 16) for x in item["value"]]
-                        
-                        # Decode little-endian to native types
-                        ip_int = struct.unpack("<I", bytes(key_bytes))[0]
-                        drop_count = struct.unpack("<Q", bytes(val_bytes))[0]
-                        
-                        ip_addr = int_to_ip(ip_int)
-                        logger.info(f" ➔ Source address [{ip_addr}] blocked: {drop_count} frames")
+                        # BTF mode returns structured JSON
+                        try:
+                            key_val = item["key"]
+                            val_obj = item["value"]
+                            drop_count = val_obj["dropped_packets"]
+                            ip_addr = int_to_ip(key_val)
+                            logger.info(f" ➔ Source address [{ip_addr}] blocked: {drop_count} frames")
+                        except:
+                            # Fallback for raw hex
+                            key_bytes = [int(x, 16) for x in item["key"]]
+                            val_bytes = [int(x, 16) for x in item["value"]]
+                            ip_int = struct.unpack("<I", bytes(key_bytes))[0]
+                            drop_count = struct.unpack("<Q", bytes(val_bytes[16:24]))[0]
+                            ip_addr = int_to_ip(ip_int)
+                            logger.info(f" ➔ Source address [{ip_addr}] blocked: {drop_count} frames")
                     print("━"*50)
                 else:
                     sys.stdout.write("🛡️ ")
