@@ -116,28 +116,14 @@ for ((thread = $F_THREAD; thread <= $L_THREAD; thread++)); do
     pg_set $cur_dev "udp_src_max $UDP_SRC_MAX"
 done
 
-function print_result() {
-    echo ""
-    echo "========================================="
-    echo "       WYNIKI GENEROWANIA RUCHU          "
-    echo "========================================="
-    total_pps=0
-    for ((thread = $F_THREAD; thread <= $L_THREAD; thread++)); do
-        cur_dev=${DEV}@${thread}
-        pps=$(grep pps /proc/net/pktgen/$cur_dev | awk '{print $2}')
-        echo "--> Wątek $thread ($cur_dev): $pps PPS"
-        total_pps=$((total_pps + pps))
-    done
-    echo "========================================="
-    echo " SUMARYCZNIE: $total_pps PPS"
-    echo "========================================="
-}
-
-# Trap dla Ctrl+C
-trap "echo 'Zatrzymywanie...'; pg_ctrl 'stop'; print_result; exit" SIGINT
+# Trap dla Ctrl+C - tylko zatrzymanie
+trap "echo -e '\n🛑 Zatrzymywanie floodu...'; pg_ctrl 'stop'; exit" SIGINT
 
 echo "🚀 Uruchamianie floodu do: $DEST_IP (MAC: $DST_MAC) na interfejsie $DEV..."
-echo "Wciśnij Ctrl+C, aby ZATRZYMAĆ i zobaczyć statystyki."
+echo "Wciśnij Ctrl+C, aby ZATRZYMAĆ."
 
 pg_ctrl "start"
-while true; do sleep 1; done
+while true; do 
+    sleep 1
+done
+
