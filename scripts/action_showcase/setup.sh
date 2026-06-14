@@ -9,7 +9,7 @@ NC='\033[0m'
 NS1="ns1"
 NS2="ns2"
 NS3="ns3"
-BPF_OBJ="/home/jos/XDP-L2-Guard/src/data_plane/filter.o"
+BPF_OBJ="../../src/data_plane/filter.o"
 
 cleanup() {
     ip netns del $NS1 2>/dev/null || true
@@ -46,6 +46,7 @@ ip netns exec $NS2 ip link set lo up
 
 ip netns exec $NS3 ip addr add 10.0.0.3/24 dev v3-1
 ip netns exec $NS3 ip link set v3-1 up
+ip netns exec $NS3 ip link set v3-1 promisc on
 ip netns exec $NS3 ip link set lo up
 
 # Enable forwarding in ns1 for NAT/Redirect tests

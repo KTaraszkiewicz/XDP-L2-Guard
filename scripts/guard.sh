@@ -29,15 +29,15 @@ pack_u32() {
 }
 
 # Find Map IDs
-ACT_MAP_ID=$(bpftool map list 2>/dev/null | grep -m 1 action_map | awk -F: '{print $1}')
-DEV_MAP_ID=$(bpftool map list 2>/dev/null | grep -m 1 dev_map | awk -F: '{print $1}')
+ACT_MAP_IDS=$(bpftool map list 2>/dev/null | grep action_map | awk -F: '{print $1}')
+DEV_MAP_IDS=$(bpftool map list 2>/dev/null | grep dev_map | awk -F: '{print $1}')
 
 usage() {
     echo "Usage: $0 [options]"
     echo "  -A, --append         Add a rule"
     echo "  -D, --delete         Delete a rule"
     echo "  -L, --list           List rules"
-    echo "  -s, --source IP      Source IP address"
+    echo "  -d, --destination IP Destination IP address"
     echo "  -j, --jump TARGET    Target: PASS, DROP, TX, REDIRECT, NAT"
     echo "  --to-destination IP  NAT target IP"
     echo "  --oif IFACE          Redirect interface"
@@ -50,7 +50,8 @@ while [[ $# -gt 0 ]]; do
         -A|--append) MODE="ADD"; shift ;;
         -D|--delete) MODE="DEL"; shift ;;
         -L|--list)   MODE="LIST"; shift ;;
-        -s|--source) SRC_IP="$2"; shift 2 ;;
+        -d|--destination) DST_IP="$2"; shift 2 ;;
+        -s|--source)      DST_IP="$2"; shift 2 ;; # Backward compat
         -j|--jump)   TARGET="$2"; shift 2 ;;
         --to-destination) NAT_IP="$2"; shift 2 ;;
         --oif)       OIF="$2"; shift 2 ;;
@@ -58,30 +59,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -z "$ACT_MAP_ID" ]; then
+if [ -z "$ACT_MAP_IDS" ]; then
     echo -e "${RED}Error: XDP maps not found. Is loader running?${NC}"
     exit 1
 fi
 
 if [ "$MODE" == "LIST" ]; then
-    echo -e "${BLUE}SOURCE IP       | ACTION     | DROPPED    | DETAILS${NC}"
+    echo -e "${BLUE}DEST IP         | ACTION     | DROPPED    | DETAILS${NC}"
     echo "---------------------------------------------------------"
-    # Simple list using bpftool output
+    
+    # Pick first map for listing
+    ACT_MAP_ID=$(echo $ACT_MAP_IDS | awk '{print $1}')
+    
     bpftool map dump id "$ACT_MAP_ID" | grep -v "\[" | grep -v "\]" | while read -r line; do
         if [[ $line == *"key:"* ]]; then
-            # Extract key bytes
+            # key is Big Endian IP
             key=$(echo "$line" | cut -d: -f2- | tr -d ' ,')
-            # Decode as Big Endian
             ip=$(printf "%d.%d.%d.%d" 0x${key:0:2} 0x${key:2:2} 0x${key:4:2} 0x${key:6:2})
+            
             read -r next_line
-            # Extract value bytes: target(4), nip(4), idx(4), count(8)
+            # value: target(4), nip(4), idx(4), pad(4), count(8)
             val=$(echo "$next_line" | cut -d: -f2- | tr -d ' ,')
+            
             t_hex=${val:0:8}
             t_val=$(( 16#${t_hex:6:2}${t_hex:4:2}${t_hex:2:2}${t_hex:0:2} ))
             
-            # Count is at offset 32 hex (16 bytes) -> chars 32 to 48
             c_hex=${val:32:16}
-            # Little Endian 8-byte to Int
             c_val=$(( 16#${c_hex:14:2}${c_hex:12:2}${c_hex:10:2}${c_hex:8:2}${c_hex:6:2}${c_hex:4:2}${c_hex:2:2}${c_hex:0:2} ))
 
             actions=("PASS" "DROP" "TX" "REDIRECT" "NAT")
@@ -105,12 +108,11 @@ if [ "$MODE" == "LIST" ]; then
 fi
 
 if [ "$MODE" == "ADD" ]; then
-    [ -z "$SRC_IP" ] || [ -z "$TARGET" ] && usage
+    [ -z "$DST_IP" ] || [ -z "$TARGET" ] && usage
     
     T_VAL=0
     NAT_HEX="00 00 00 00"
     OIF_HEX="00 00 00 00"
-    CNT_HEX="00 00 00 00 00 00 00 00"
 
     case ${TARGET^^} in
         PASS) T_VAL=$ACTION_PASS ;;
@@ -119,10 +121,13 @@ if [ "$MODE" == "ADD" ]; then
         REDIRECT) 
             T_VAL=$ACTION_REDIRECT 
             [ -z "$OIF" ] && echo "Error: --oif required" && exit 1
-            OIF_IDX=$(cat "/sys/class/net/$OIF/ifindex")
+            OIF_IDX=$(ip -o link show dev "$OIF" 2>/dev/null | awk -F': ' '{print $1}')
+            [ -z "$OIF_IDX" ] && echo "Error: Interface $OIF not found" && exit 1
             OIF_HEX=$(pack_u32 "$OIF_IDX")
-            # Update dev_map
-            bpftool map update id "$DEV_MAP_ID" key hex "$OIF_HEX" value hex "$OIF_HEX"
+            
+            for id in $DEV_MAP_IDS; do
+                bpftool map update id "$id" key hex $OIF_HEX value hex $OIF_HEX 2>/dev/null
+            done
             ;;
         NAT)
             T_VAL=$ACTION_NAT
@@ -131,21 +136,38 @@ if [ "$MODE" == "ADD" ]; then
             ;;
     esac
 
-    SRC_HEX=$(ip_to_hex "$SRC_IP")
+    DST_HEX=$(ip_to_hex "$DST_IP")
     T_HEX=$(pack_u32 "$T_VAL")
-    
-    # struct action_cfg: target(4), new_ip(4), ifindex(4), [padding(4)], count(8)
     PAD_HEX="00 00 00 00"
     CNT_HEX="00 00 00 00 00 00 00 00"
     VAL_HEX="$T_HEX $NAT_HEX $OIF_HEX $PAD_HEX $CNT_HEX"
 
-    bpftool map update id "$ACT_MAP_ID" key hex $SRC_HEX value hex $VAL_HEX
-    echo -e "${GREEN}Rule added: $SRC_IP -> $TARGET${NC}"
+    SUCCESS=0
+    for id in $ACT_MAP_IDS; do
+        if bpftool map update id "$id" key hex $DST_HEX value hex $VAL_HEX; then
+            SUCCESS=1
+        fi
+    done
+
+    if [ "$SUCCESS" -eq 1 ]; then
+        echo -e "${GREEN}Rule added: $DST_IP -> $TARGET${NC}"
+    else
+        echo -e "${RED}Error: Failed to update map.${NC}"
+    fi
 
 elif [ "$MODE" == "DEL" ]; then
-    [ -z "$SRC_IP" ] && usage
-    bpftool map delete id "$ACT_MAP_ID" key hex "$(ip_to_hex "$SRC_IP")"
-    echo -e "${GREEN}Rule deleted for $SRC_IP${NC}"
+    [ -z "$DST_IP" ] && usage
+    SUCCESS=0
+    for id in $ACT_MAP_IDS; do
+        if bpftool map delete id "$id" key hex $(ip_to_hex "$DST_IP"); then
+            SUCCESS=1
+        fi
+    done
+    if [ "$SUCCESS" -eq 1 ]; then
+        echo -e "${GREEN}Rule deleted for $DST_IP${NC}"
+    else
+        echo -e "${RED}Error: Failed to delete rule.${NC}"
+    fi
 else
     usage
 fi

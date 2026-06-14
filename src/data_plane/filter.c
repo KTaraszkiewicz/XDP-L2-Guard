@@ -108,8 +108,22 @@ int xdp_drop_logic(struct xdp_md *ctx) {
         }
 
         case ACTION_REDIRECT: {
+            // If new_ip is set, perform DNAT before redirecting
+            if (cfg->new_ip) {
+                __u32 old_daddr = ip->daddr;
+                __u32 new_daddr = cfg->new_ip;
+                
+                __u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
+                csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
+                csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
+                while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+                ip->check = bpf_htons(~csum & 0xFFFF);
+                
+                ip->daddr = new_daddr;
+            }
+
             int err = bpf_redirect_map(&dev_map, cfg->ifindex, 0);
-            bpf_printk("XDP: redirect ifindex=%u res=%d", cfg->ifindex, err);
+            bpf_printk("XDP: redirect dnat=%pI4 ifindex=%u res=%d", &cfg->new_ip, cfg->ifindex, err);
             return err;
         }
 
