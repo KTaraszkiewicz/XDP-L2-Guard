@@ -4,11 +4,30 @@
 # Zoptymalizowany pod maksymalny PPS dla testów porównawczych XDP vs nftables/iptables
 # Automatycznie wykorzystuje wszystkie dostępne rdzenie logiczne procesora.
 
-basedir=`dirname $0`
-source ${basedir}/functions.sh
-root_check_run_with_sudo "$@"
+# --- POMOCNICZE FUNKCJE (zamiast brakujących functions.sh) ---
+function pg_ctrl() {
+    echo "$1" > /proc/net/pktgen/pgctrl
+}
 
-# 1. Logika pobierania IP jako pierwszego argumentu
+function pg_thread() {
+    echo "$2 $3" > /proc/net/pktgen/kpktgend_$1
+}
+
+function pg_set() {
+    echo "$2" > /proc/net/pktgen/$1
+}
+
+function root_check() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "Błąd: Uruchom skrypt z uprawnieniami root (sudo)."
+        exit 1
+    fi
+}
+# -----------------------------------------------------------
+
+root_check
+
+# 1. Logika pobierania argumentów
 if [ -z "$1" ] || [[ "$1" == -* ]]; then
     echo "Błąd: Brak docelowego adresu IP."
     echo "Użycie: $0 <Adres_IP_Celu> -i <Interfejs_sieciowy>"
@@ -17,12 +36,20 @@ if [ -z "$1" ] || [[ "$1" == -* ]]; then
 fi
 
 DEST_IP=$1
-shift # Przesuwamy argumenty, aby parameters.sh mógł obsłużyć resztę (np. -i dla interfejsu)
+shift
 
-source ${basedir}/parameters.sh
+# Parsowanie pozostałych argumentów (np. -i)
+while getopts "i:m:" opt; do
+    case ${opt} in
+        i ) DEV=$OPTARG ;;
+        m ) DST_MAC=$OPTARG ;;
+    esac
+done
 
-# Trap EXIT first
-trap_exit
+if [ -z "$DEV" ]; then
+    echo "Błąd: Musisz podać interfejs sieciowy (-i <interfejs>)."
+    exit 1
+fi
 
 # =========================================================================
 # AUTOMATYZACJA RDZENI: Wykrywanie wszystkich wątków logicznych procesora
@@ -35,66 +62,58 @@ echo "=== Wykryto rdzenie logiczne: $CPUS_COUNT. Mapowanie wątków: 0 do $L_THR
 
 # Konfiguracja wydajnościowa (Maksymalny Stres-Test)
 COUNT="0"             # 0 = nieskończony flood (zatrzymanie przez Ctrl+C)
-CLONE_SKB="100000"    # Klonowanie pakietów w pamięci jądra (omija alokację i drastycznie podnosi PPS)
-BURST="32"            # Pakowanie ramek do kolejki sieciowej (xmit_more)
-PKT_SIZE="60"         # Najmniejszy możliwy pakiet (60B + 4B CRC = 64B na kablu) - klucz do testowania XDP
+CLONE_SKB="100000"    # Klonowanie pakietów w pamięci jądra
+BURST="32"            # Pakowanie ramek do kolejki sieciowej
+PKT_SIZE="60"         # Najmniejszy możliwy pakiet
 
-# !!! WAŻNE: Wpisz tutaj adres MAC karty sieciowej komputera docelowego (Celu) !!!
-[ -z "$DST_MAC" ] && DST_MAC="90:e2:ba:ff:ff:ff"
+# Auto-detekcja MAC jeśli nie podano
+if [ -z "$DST_MAC" ]; then
+    echo "🔍 Szukanie adresu MAC dla $DEST_IP..."
+    ping -c 1 -W 1 $DEST_IP > /dev/null
+    DST_MAC=$(ip neighbor show $DEST_IP | awk '{print $5}' | grep -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}')
+    if [ -z "$DST_MAC" ]; then
+        echo "⚠️  Nie znaleziono MAC dla $DEST_IP. Używam domyślnego (może nie działać!)."
+        DST_MAC="90:e2:ba:ff:ff:ff"
+    else
+        echo "✅ Znaleziono MAC: $DST_MAC"
+    fi
+fi
 
-# Losowość portów źródłowych (Wymusza działanie RSS / multiqueue na karcie celu)
+# Losowość portów źródłowych (Wymusza działanie RSS)
 UDP_SRC_MIN=9
 UDP_SRC_MAX=109
 
-if [ -n "$DEST_IP" ]; then
-    validate_addr${IP6} $DEST_IP
-    read -r DST_MIN DST_MAX <<< $(parse_addr${IP6} $DEST_IP)
-fi
-if [ -n "$DST_PORT" ]; then
-    read -r UDP_DST_MIN UDP_DST_MAX <<< $(parse_ports $DST_PORT)
-    validate_ports $UDP_DST_MIN $UDP_DST_MAX
-fi
-
 # Reset poprzedniej konfiguracji
-[ -z "$APPEND" ] && pg_ctrl "reset"
+pg_ctrl "reset"
 
 # Pętla konfigurująca dedykowany wątek dla każdego rdzenia CPU
 for ((thread = $F_THREAD; thread <= $L_THREAD; thread++)); do
-    dev=${DEV}@${thread}
+    cur_dev=${DEV}@${thread}
 
-    [ -z "$APPEND" ] && pg_thread $thread "rem_device_all"
-    pg_thread $thread "add_device" $dev
+    pg_thread $thread "rem_device_all"
+    pg_thread $thread "add_device" $cur_dev
 
-    # Mapowanie wątku pktgen bezpośrednio do numeru CPU (1:1)
-    pg_set $dev "flag QUEUE_MAP_CPU"
+    # Mapowanie wątku pktgen bezpośrednio do numeru CPU
+    pg_set $cur_dev "flag QUEUE_MAP_CPU"
 
     # Parametry generowania ruchu
-    pg_set $dev "count $COUNT"
-    pg_set $dev "clone_skb $CLONE_SKB"
-    pg_set $dev "pkt_size $PKT_SIZE"
-    pg_set $dev "delay 0" 
-    pg_set $dev "burst $BURST"
+    pg_set $cur_dev "count $COUNT"
+    pg_set $cur_dev "clone_skb $CLONE_SKB"
+    pg_set $cur_dev "pkt_size $PKT_SIZE"
+    pg_set $cur_dev "delay 0" 
+    pg_set $cur_dev "burst $BURST"
 
-    # Wyłączenie timestampingu dla zaoszczędzenia cykli CPU
-    pg_set $dev "flag NO_TIMESTAMP"
+    # Wyłączenie timestampingu
+    pg_set $cur_dev "flag NO_TIMESTAMP"
 
     # Adresowanie
-    pg_set $dev "dst_mac $DST_MAC"
-    pg_set $dev "dst${IP6}_min $DST_MIN"
-    pg_set $dev "dst${IP6}_max $DST_MAX"
+    pg_set $cur_dev "dst_mac $DST_MAC"
+    pg_set $cur_dev "dst $DEST_IP"
 
-    if [ -n "$DST_PORT" ]; then
-        pg_set $dev "flag UDPDST_RND"
-        pg_set $dev "udp_dst_min $UDP_DST_MIN"
-        pg_set $dev "udp_dst_max $UDP_DST_MAX"
-    fi
-
-    [ ! -z "$UDP_CSUM" ] && pg_set $dev "flag UDPCSUM"
-
-    # Losowanie portu źródłowego - kluczowe dla rozbicia ruchu na wiele kolejek RX na celu
-    pg_set $dev "flag UDPSRC_RND"
-    pg_set $dev "udp_src_min $UDP_SRC_MIN"
-    pg_set $dev "udp_src_max $UDP_SRC_MAX"
+    # Losowanie portu źródłowego
+    pg_set $cur_dev "flag UDPSRC_RND"
+    pg_set $cur_dev "udp_src_min $UDP_SRC_MIN"
+    pg_set $cur_dev "udp_src_max $UDP_SRC_MAX"
 done
 
 function print_result() {
@@ -102,23 +121,23 @@ function print_result() {
     echo "========================================="
     echo "       WYNIKI GENEROWANIA RUCHU          "
     echo "========================================="
+    total_pps=0
     for ((thread = $F_THREAD; thread <= $L_THREAD; thread++)); do
-        dev=${DEV}@${thread}
-        echo "--> Wątek (Rdzeń) $thread ($dev):"
-        cat /proc/net/pktgen/$dev | grep -A2 "Result:"
-        echo "-----------------------------------------"
+        cur_dev=${DEV}@${thread}
+        pps=$(grep pps /proc/net/pktgen/$cur_dev | awk '{print $2}')
+        echo "--> Wątek $thread ($cur_dev): $pps PPS"
+        total_pps=$((total_pps + pps))
     done
+    echo "========================================="
+    echo " SUMARYCZNIE: $total_pps PPS"
+    echo "========================================="
 }
 
-trap true SIGINT
+# Trap dla Ctrl+C
+trap "echo 'Zatrzymywanie...'; pg_ctrl 'stop'; print_result; exit" SIGINT
 
-if [ -z "$APPEND" ]; then
-    echo "Uruchamianie floodu do: $DEST_IP (MAC: $DST_MAC)..." >&2
-    echo "Wciśnij Ctrl+C, aby ZATRZYMAĆ i zobaczyć statystyki PPS." >&2
-    pg_ctrl "start"
-    echo "Zakończono." >&2
+echo "🚀 Uruchamianie floodu do: $DEST_IP (MAC: $DST_MAC) na interfejsie $DEV..."
+echo "Wciśnij Ctrl+C, aby ZATRZYMAĆ i zobaczyć statystyki."
 
-    print_result
-else
-    echo "Tryb Append: Konfiguracja zakończona."
-fi
+pg_ctrl "start"
+while true; do sleep 1; done
