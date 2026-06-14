@@ -1,5 +1,3 @@
-nstrukcja obsługi (Plik README.md)
-
 # Generator Ruchu Pktgen (Stres-Testy dla XDP / iptables)
 
 Skrypt służy do generowania maksymalnej liczby pakietów na sekundę (PPS - *Packets Per Second*) przy minimalnym rozmiarze ramki (64 bajty na warstwie fizycznej). Narzędzie służy do porównywania wydajności mechanizmów filtrowania pakietów (XDP vs nftables/iptables) w sieci lokalnej poprzez symulację rozproszonego ataku typu Flood.
