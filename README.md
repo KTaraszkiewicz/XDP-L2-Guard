@@ -5,120 +5,107 @@
 [![Technology](https://img.shields.io/badge/Technology-eBPF%20%2F%20XDP%20Native-flash.svg)](https://ebpf.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An advanced, high-performance Layer 2 frame filtering engine built upon **eBPF (extended Berkeley Packet Filter)** and **XDP (eXpress Data Path)**. This project implements a split-plane architecture designed for real-time volumetric DDoS mitigation at the network interface driver level, completely bypassing the expensive Linux network stack allocation overhead.
+An advanced, high-performance Layer 2 frame filtering engine built upon **eBPF** (extended Berkeley Packet Filter) and **XDP** (eXpress Data Path).
 
----
+By dropping packets at the network interface driver level—completely bypassing expensive Linux network stack `sk_buff` allocations—XDP-L2-Guard provides real-time volumetric DDoS mitigation that easily handles line-rate saturation without exhausting system resources.
 
-## 📁 Repository Structure
+## Features
+
+- **Microsecond Latency**: Acts directly on the NIC's DMA ring buffer.
+- **Negligible CPU Overhead**: Reduces CPU utilization to ~15% under floods that completely paralyze standard Netfilter (`iptables`).
+- **Rich Action Set**: Beyond dropping, supports `PASS`, `TX` (fast-path bounce), `NAT` (stateless rewriting), and `REDIRECT` (L2 forwarding).
+- **Familiar CLI**: `guard.py` offers an `iptables`-like syntax for adding and removing mitigation rules dynamically.
+- **CO-RE Architecture**: Modern "Compile Once - Run Everywhere" AOT deployment.
+
+## Installation
+
+**Requirements:** Ubuntu 22.04 LTS (or newer) running Linux Kernel `5.15.0` or higher.
+
+1. Clone the repository and navigate to the root directory.
+2. Provision the execution environment (installs `clang`, `llvm`, `libbpf-dev`, etc.):
+
+```bash
+./scripts/setup_env.sh
+```
+
+> [!IMPORTANT]  
+> If you are using native XDP hardware offload, hardware segmentation features like GRO and TSO must be suppressed to keep packet sizes within BPF page limits:
+>
+> ```bash
+> sudo ethtool -K eth0 sg off tso off ufo off gro off gso off
+> ```
+
+## Quickstart
+
+Start the core XDP loader and attach the data-plane to your network interface. For demonstration, we'll use `eth0`:
+
+```bash
+# Start the XDP orchestrator (use --generic for testing environments like VMs)
+sudo python3 src/control_plane/loader.py --interface eth0
+```
+
+With the engine running, open another terminal and use `guard.py` to mitigate threats.
+
+### Adding a rule (Drop IP)
+```bash
+sudo python3 src/control_plane/guard.py -A -d 192.168.1.100 -j DROP
+```
+
+### Checking statistics
+```bash
+sudo python3 src/control_plane/guard.py -L
+```
+
+### Removing a rule
+```bash
+sudo python3 src/control_plane/guard.py -D -d 192.168.1.100
+```
+
+## Advanced Actions
+
+XDP-L2-Guard supports forwarding actions alongside standard filtering.
+
+### Stateless NAT
+Rewrite destination IP for incoming packets to a new address:
+```bash
+sudo python3 src/control_plane/guard.py -A -d 10.0.0.50 -j NAT --to-destination 10.0.0.200
+```
+
+### Fast-path Redirect
+Push incoming traffic matching an IP immediately out of a different interface (e.g., `eth1`):
+```bash
+sudo python3 src/control_plane/guard.py -A -d 10.0.0.60 -j REDIRECT --oif eth1
+```
+
+## Architecture
+
+XDP-L2-Guard employs a decoupled split-plane model:
+
+- **Data Plane (Kernel Space):** Highly restrictive, boundary-checked C code hooks into the NIC's NAPI driver loop.
+- **Control Plane (User Space):** Python orchestration binds the pre-compiled CO-RE eBPF binaries to the interface via `iproute2` and interacts asynchronously via BPF maps.
+
+<details>
+<summary>View repository structure</summary>
 
 ```text
 xdp-l2-guard/
 ├── src/
-│   ├── data_plane/         # Kernel Space: eBPF C source code
-│   │   ├── filter.c        # Core XDP packet processing and dropping logic
-│   │   └── headers.h       # Protocol structures and verifier boundary helpers
-│   └── control_plane/      # User Space: Orchestration & Monitoring
-│       ├── loader.py       # Python orchestrator (AOT compilation trigger & iproute2 binding)
-│       └── utils.py        # Helper routines and logging configuration
-├── scripts/
-│   ├── setup_env.sh        # Automated toolchain provisioning script
-│   └── benchmark.sh        # Traffic generation wrapper (pktgen / hping3)
-├── lkm_panic/              # Demo: Linux Kernel Module (LKM) crash simulation
-│   ├── Makefile            # Build directives to compile the malicious kernel object (.ko)
-│   └── null_pointer.c      # Vulnerable C code triggering intentional NULL pointer dereference
-├── docs/
-│   ├── issues_report.md     # Detailed issue report with analysis, solutions and recommendations
-│   └── documentation.md    # Detailed documentation of steps done during deployment
-├── README.md               # Project overview and deployment guide
-├── Makefile                # Build directives for CO-RE Ahead-of-Time (AOT) compilation
-└── LICENSE                 # Project license
+│   ├── data_plane/         # Kernel Space (eBPF C code)
+│   └── control_plane/      # User Space (loader & CLI orchestrator)
+├── scripts/                # Setup and traffic generation tools
+├── lkm_panic/              # LKM crash simulation demo
+├── docs/                   # Full deployment & issue logs
+└── Makefile                # CO-RE compilation directives
 ```
 
----
+</details>
 
-## 🏗️ Architectural Overview
-
-The system architecture is divided into two decoupled operations planes communicating asynchronously via high-performance **eBPF Maps**. The engine is built upon the modern **CO-RE (Compile Once - Run Everywhere)** paradigm:
-
-1. **Data Plane (Kernel Space):** Written in *Restrictive C*, hooked directly into the network interface card (NIC) driver event loop (NAPI). It performs line-rate parsing, boundary-checked pointer arithmetic, and issues instantaneous `XDP_DROP` verdicts.
-2. **Control Plane (User Space):** Written in *Python*, acting as an operating system orchestrator. Instead of relying on heavy runtime JIT compilers, it utilizes **Ahead-of-Time (AOT) compiled CO-RE ELF objects**. It dynamically attaches/detaches eBPF bytecode using native *iproute2* infrastructure and asynchronously polls metrics from shared BPF Hash maps using *bpftool* JSON outputs.
-
----
-
-## 📊 Performance Benchmarks (XDP Native vs. Netfilter iptables)
-
-During exhaustive stress-testing under massive volumetric network anomalies (e.g., TCP SYN flood/ICMP streams via `pktgen` and `hping3`), the following paradigm shift was observed:
-
-| Performance Metric | Traditional `iptables` (Netfilter) | `XDP-L2-Guard` (XDP Native) |
-| :--- | :--- | :--- |
-| **Packet Processing Hook** | Late (Post-`sk_buff` allocation in Kernel Stack) | Ultra-Early (Direct DMA Ring Buffer / Driver Level) |
-| **CPU Utilization** | **100%** (CPU saturated by `ksoftirqd` software interrupts) | **~15%** (Negligible impact on host compute resources) |
-| **Drop Throughput (Single Core)** | Ring Buffer Saturation (~9M packets overwritten/lost) | **>26 Million Packets Per Second (PPS)** stable |
-| **System Latency** | Massive jitter / complete network paralysis | Zero-latency tolerance (Sub-millisecond ping response) |
-
----
-
-## 🛠️ Environment Requirements & Toolchain
-
-To replicate the environment and ensure compatibility with advanced BPF helpers, the host runtime must meet the following baseline configuration:
-
-* **Operating System:** Ubuntu 22.04 LTS (or newer)
-* **Kernel Version:** `5.15.0` or higher (Full BPF verifier optimization and modern map-type support)
-* **Base Packages:** `libbpf`, `linux-tools-common`, `linux-tools-$(uname -r)` (for bpftool)
-* **Compiler Toolchain:** `clang`, `llvm`, `libbpf-dev`, `linux-headers-$(uname -r)`, `make`, `gcc`
-* **Network Infrastructure:** Active `Ethernet Carrier` state, utilizing `virtio_net` (QEMU/KVM) or paired `veth` interfaces supporting Native XDP mode (`xdpdrv`).
-
----
-
-## 🚀 Quick Start & Deployment Guide
-
-### 1. Provisioning the Toolchain
-Deploy the execution environment dependencies via the provided provisioning automation script:
-```bash
-sudo apt update && sudo apt install -y clang llvm libbpf-dev linux-headers-$(uname -r) linux-tools-common linux-tools-$(uname -r) ethtool net-tools gcc make
-```
-### 2. Mitigating Hardware Offload Incompatibilities
-Before mounting the native data plane, hardware features such as GRO (Generic Receive Offload) must be explicitly suppressed to prevent MTU segmentation anomalies outside BPF page restrictions:
-```bash
-sudo ethtool -K eth0 sg off tso off ufo off gro off gso off
-```
-### (Automated option) 1. and 2. are composed into script setup_env.sh:
-```bash
-./setup_env.sh
-```
-
-### 3. Launching the Security Engine
-Execute the control plane loader script to compile and attach the high-speed data plane filters onto the designated hardware interface:
-```bash
-sudo python3 src/control_plane/loader.py --interface enp0s3
-```
-To run the engine in simulated Generic mode (for testing inside limited containers or non-native drivers), use the --generic flag:
-```bash
-sudo python3 src/control_plane/loader.py --interface enp0s3 --generic
-```
----
-
-## 🛡️ Dynamic Blacklist Configuration
-
-The engine uses an in-kernel BPF Hash Map (blacklist_ips) to store targets. You can interact with the live kernel data plane directly from User Space using standard toolsets.
-- Manually insert a blocked IPv4 address (e.g., 192.168.1.100 -> Hex: c0 a8 01 64):
-  ```bash
-  sudo bpftool map update name blacklist_ips key 0xc0 0xa8 0x01 0x64 value 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00
-  ```
-- Inspect current drops and counters:
-  ```bash
-  sudo bpftool map dump name blacklist_ips
-  ```
----
-  
-## 👥 Authors & Acknowledgments
+## Authors
 
 Developers: Krzysztof Taraszkiewicz and Józef Sztabiński  
 Academic Supervisor: dr inż Jerzy Demkowicz  
-Developed as part of Advanced Computer Architecture miniProject at Gdańsk University of Technology (Politechnika Gdańska).
+Developed as part of the Advanced Computer Architecture miniProject at Gdańsk University of Technology.
 
----
-
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
