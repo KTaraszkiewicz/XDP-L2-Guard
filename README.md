@@ -1,4 +1,4 @@
-# XDP-L2-Guard 🛡️🚀
+# XDP-L2-Guard
 
 [![Kernel Compatibility](https://img.shields.io/badge/Kernel-5.15%2B-blue.svg)](https://kernel.org)
 [![Platform](https://img.shields.io/badge/Platform-Ubuntu%2022.04%20LTS-orange.svg)](https://ubuntu.com)
