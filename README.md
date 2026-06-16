@@ -79,7 +79,7 @@ sudo python3 src/control_plane/guard.py -A -d 10.0.0.60 -j REDIRECT --oif eth1
 
 ## Architecture
 
-XDP-L2-Guard employs a decoupled split-plane model:
+XDP-L2-Guard employs a decoupled split-plane model. For more details, see the [Architecture Overview](docs/architecture.md) and the [Developer Guide](docs/development.md).
 
 - **Data Plane (Kernel Space):** Highly restrictive, boundary-checked C code hooks into the NIC's NAPI driver loop.
 - **Control Plane (User Space):** Python orchestration binds the pre-compiled CO-RE eBPF binaries to the interface via `iproute2` and interacts asynchronously via BPF maps.
@@ -93,9 +93,10 @@ xdp-l2-guard/
 │   ├── data_plane/         # Kernel Space (eBPF C code)
 │   └── control_plane/      # User Space (loader & CLI orchestrator)
 ├── scripts/                # Setup and traffic generation tools
+├── docs/                   # Technical documentation
 ├── lkm_panic/              # LKM crash simulation demo
-├── docs/                   # Full deployment & issue logs
-└── Makefile                # CO-RE compilation directives
+├── Makefile                # CO-RE compilation directives
+└── LICENSE                 # MIT License
 ```
 
 </details>

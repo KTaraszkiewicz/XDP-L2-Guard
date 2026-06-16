@@ -1,0 +1,127 @@
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, shadows}
+
+\geometry{margin=1in}
+
+\definecolor{primary}{RGB}{0, 102, 204}
+\definecolor{secondary}{RGB}{102, 102, 102}
+\definecolor{codebg}{RGB}{245, 245, 245}
+\definecolor{cmdcolor}{RGB}{0, 128, 0}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    filecolor=magenta,      
+    urlcolor=primary,
+    pdftitle={XDP-L2-Guard Developer Guide},
+    pdfpagemode=FullScreen,
+}
+
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{secondary},
+    keywordstyle=\color{primary},
+    commentstyle=\color{secondary},
+    stringstyle=\color{cmdcolor},
+}
+
+\title{\textbf{XDP-L2-Guard Developer Guide}}
+\author{Development Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\chapter{Introduction}
+This guide is intended for developers who wish to modify or extend XDP-L2-Guard. It covers environment setup, compilation, extension patterns, and testing procedures.
+
+\chapter{Development Environment}
+
+The project is optimized for Ubuntu 22.04 LTS. Ensure you have the necessary dependencies installed by running the provided setup script:
+
+\begin{lstlisting}[language=bash]
+sudo ./scripts/setup_env.sh
+\end{lstlisting}
+
+\chapter{Compilation}
+
+The project uses a \texttt{Makefile} to compile the eBPF C code into an object file using \texttt{clang}.
+
+\begin{lstlisting}[language=bash]
+make
+\end{lstlisting}
+
+This will generate \texttt{src/data\_plane/filter.o}. The \texttt{Makefile} uses \texttt{bpftool} to generate \texttt{vmlinux.h} if needed, supporting the CO-RE (Compile Once - Run Everywhere) architecture.
+
+\chapter{Adding New Actions}
+
+To add a new action (e.g., \texttt{LOGGING} or \texttt{RATE\_LIMITING}), follow these steps:
+
+\section{Update Data Plane}
+Modify \texttt{src/data\_plane/filter.c}:
+\begin{enumerate}
+    \item Add the new action to \texttt{enum xdp\_action\_target}.
+    \item Implement the logic inside the \texttt{switch (cfg->target)} block in \texttt{xdp\_drop\_logic}.
+\end{enumerate}
+
+\section{Update Control Plane}
+Modify the management tools:
+\begin{enumerate}
+    \item \textbf{Python CLI}: Modify \texttt{src/control\_plane/guard.py} to support the new target.
+    \item \textbf{Bash Wrapper}: If using the bash version, update \texttt{scripts/guard.sh}.
+\end{enumerate}
+
+\chapter{Testing \& Validation}
+
+Several scripts are provided in the \texttt{scripts/} directory for testing different aspects of the system.
+
+\section{Simple Ping Test}
+Located in \texttt{scripts/simple\_ping/}, this set of scripts sets up a test environment using network namespaces.
+\begin{itemize}
+    \item \texttt{setup.sh}: Creates namespaces and virtual ethernet pairs.
+    \item \texttt{ping.sh}: Runs a ping test between namespaces.
+    \item \texttt{block.sh} / \texttt{unblock.sh}: Demonstrates adding/removing drop rules.
+\end{itemize}
+
+\section{Action Showcase}
+Located in \texttt{scripts/action\_showcase/}, these scripts demonstrate advanced actions like \texttt{REDIRECT} and \texttt{NAT}.
+\begin{itemize}
+    \item \texttt{setup.sh}: Sets up a complex topology with multiple namespaces.
+    \item \texttt{monitor.sh}: Runs \texttt{tcpdump} in background namespaces to verify packet arrival.
+\end{itemize}
+
+\section{Performance Testing}
+Use \texttt{scripts/pktgen\_flood/pktgen\_flood.sh} to generate high volumes of UDP traffic to test the filter's performance under load.
+
+\chapter{Debugging}
+
+Since eBPF runs in the kernel, debugging is primarily done via \texttt{bpf\_printk}. You can view the output using:
+
+\begin{lstlisting}[language=bash]
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+\end{lstlisting}
+
+Alternatively, use \texttt{bpftool} to inspect maps:
+
+\begin{lstlisting}[language=bash]
+sudo bpftool map dump name action_map
+\end{lstlisting}
+
+\end{document}

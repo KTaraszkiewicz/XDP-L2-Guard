@@ -1,0 +1,159 @@
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, shadows}
+
+\geometry{margin=1in}
+
+\definecolor{primary}{RGB}{0, 102, 204}
+\definecolor{secondary}{RGB}{102, 102, 102}
+\definecolor{codebg}{RGB}{245, 245, 245}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    filecolor=magenta,      
+    urlcolor=primary,
+    pdftitle={XDP-L2-Guard Architecture Overview},
+    pdfpagemode=FullScreen,
+}
+
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{secondary},
+    keywordstyle=\color{primary},
+}
+
+\title{\textbf{XDP-L2-Guard Architecture Overview}}
+\author{Development Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\chapter{Introduction}
+XDP-L2-Guard follows a decoupled architecture, separating the high-performance data plane (Kernel Space) from the management and configuration logic (User Space).
+
+\section{System Components}
+
+\begin{center}
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    block/.style={rectangle, draw, fill=blue!10, text width=5em, text centered, rounded corners, minimum height=3em, drop shadow},
+    map/.style={cylinder, draw, fill=yellow!10, text width=4em, text centered, shape border rotate=90, minimum height=3em, drop shadow},
+    cloud/.style={draw, ellipse, fill=green!10, text width=5em, text centered, minimum height=3em, drop shadow},
+    arrow/.style={thick,->,>=stealth}
+]
+
+% User Space
+\node [block] (cli) {guard.py / guard.sh};
+\node [block, below of=cli] (loader) {Loader / Controller};
+\node [map, right=2cm of loader] (maps) {BPF Maps};
+
+\node[draw, dashed, inner sep=0.5cm, label=above:User Space, fit=(cli) (loader) (maps)] (userspace) {};
+
+% Kernel Space
+\node [block, below=2cm of loader] (filter) {XDP Filter Program};
+\node [block, left=1cm of filter] (nic) {NIC Driver};
+
+\node [cloud, below left=1cm and 0.5cm of filter] (discard) {Discard};
+\node [cloud, below=1cm of filter] (stack) {Linux Stack};
+\node [cloud, below right=1cm and 0.5cm of filter] (bounce) {Bounce};
+\node [cloud, right=1cm of filter] (redirect) {Redirect};
+
+\node[draw, dashed, inner sep=0.5cm, label=below:Kernel Space, fit=(filter) (nic) (discard) (stack) (bounce) (redirect)] (kernel) {};
+
+% Connections
+\draw [arrow] (cli) -- node[right] {\scriptsize CLI} (loader);
+\draw [arrow] (loader) -- node[above] {\scriptsize bpf\_map\_update} (maps);
+\draw [arrow] (maps) -- node[right] {\scriptsize lookup} (filter);
+\draw [arrow] (nic) -- node[above] {\scriptsize DMA} (filter);
+
+\draw [arrow] (filter) -- node[left] {\scriptsize XDP\_DROP} (discard);
+\draw [arrow] (filter) -- node[right] {\scriptsize XDP\_PASS} (stack);
+\draw [arrow] (filter) -- node[right] {\scriptsize XDP\_TX} (bounce);
+\draw [arrow] (filter) -- node[above] {\scriptsize XDP\_REDIRECT} (redirect);
+
+\end{tikzpicture}
+\end{center}
+
+\chapter{Data Plane (eBPF/XDP)}
+
+The data plane is implemented in C and compiled into eBPF bytecode. It hooks into the network driver's NAPI loop using XDP (eXpress Data Path).
+
+\section{Key Features}
+\begin{itemize}
+    \item \textbf{Direct Access}: Operates on \texttt{xdp\_md} context, providing direct access to packet data.
+    \item \textbf{Stateless}: The filter is primarily stateless, relying on BPF maps for rule lookup.
+    \item \textbf{Performance}: Bypasses \texttt{sk\_buff} allocation, leading to significant performance gains under high traffic.
+\end{itemize}
+
+\section{Hook Points}
+\begin{itemize}
+    \item \texttt{SEC("xdp")}: The main entry point \texttt{xdp\_drop\_logic}.
+\end{itemize}
+
+\chapter{Control Plane (Python/Bash)}
+
+The control plane manages the lifecycle of the eBPF program and provides a user-friendly interface for rule management.
+
+\section{Components}
+\begin{itemize}
+    \item \textbf{Loader (\texttt{src/control\_plane/loader.py})}: Loads the eBPF object file into the kernel and attaches it to the specified interface. It also populates the initial maps.
+    \item \textbf{CLI (\texttt{src/control\_plane/guard.py})}: An \texttt{iptables}-like interface to interact with the \texttt{action\_map}.
+    \item \textbf{Bash Wrapper (\texttt{scripts/guard.sh})}: A lightweight version using \texttt{bpftool} for environments where Python might not be preferred.
+\end{itemize}
+
+\chapter{BPF Maps}
+
+Maps are the bridge between User Space and Kernel Space.
+
+\begin{enumerate}
+    \item \textbf{\texttt{action\_map} (Hash Map)}:
+    \begin{itemize}
+        \item \textbf{Key}: Destination IP (\texttt{\_\_u32}).
+        \item \textbf{Value}: \texttt{struct action\_cfg} containing:
+        \begin{itemize}
+            \item \texttt{target}: Action to perform (DROP, PASS, TX, REDIRECT, NAT).
+            \item \texttt{new\_ip}: Destination IP for NAT.
+            \item \texttt{ifindex}: Target interface index for REDIRECT.
+            \item \texttt{dropped\_packets}: Counter for monitoring.
+        \end{itemize}
+    \end{itemize}
+    \item \textbf{\texttt{dev\_map} (Device Map)}:
+    \begin{itemize}
+        \item Used for \texttt{XDP\_REDIRECT} to efficiently forward packets to other interfaces.
+    \end{itemize}
+    \item \textbf{\texttt{total\_dropped} (Array Map)}:
+    \begin{itemize}
+        \item A single-element array to track total dropped packets across all rules.
+    \end{itemize}
+\end{enumerate}
+
+\chapter{Packet Flow Logic}
+
+\begin{enumerate}
+    \item Packet arrives at the NIC.
+    \item XDP program is triggered before \texttt{sk\_buff} is created.
+    \item Program parses Ethernet and IP headers.
+    \item Program lookups the Destination IP in \texttt{action\_map}.
+    \item If a match is found, the specified action is performed.
+    \item If no match, \texttt{XDP\_PASS} is returned, letting the packet continue to the Linux network stack.
+\end{enumerate}
+
+\end{document}
