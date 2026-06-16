@@ -56,6 +56,12 @@ sudo python3 src/control_plane/guard.py -A -d 192.168.1.100 -j DROP
 sudo python3 src/control_plane/guard.py -L
 ```
 
+### Real-time Telemetry Monitor
+Launch the live eBPF map dashboard to track packet counts per source IP in real-time, extracted directly from the XDP data plane:
+```bash
+sudo python3 src/control_plane/telemetry.py
+```
+
 ### Removing a rule
 ```bash
 sudo python3 src/control_plane/guard.py -D -d 192.168.1.100
@@ -77,6 +83,12 @@ Push incoming traffic matching an IP immediately out of a different interface (e
 sudo python3 src/control_plane/guard.py -A -d 10.0.0.60 -j REDIRECT --oif eth1
 ```
 
+## Testing and Demonstration
+
+The repository includes a self-contained Linux network namespace environment to safely test XDP filtering, forwarding, and telemetry on a simulated 3-node network.
+
+See the [Demonstration Environment Guide](scripts/example/README.md) for a complete 5-terminal walkthrough.
+
 ## Architecture
 
 XDP-L2-Guard employs a decoupled split-plane model. For more details, see the [Architecture Overview](docs/architecture.md) and the [Developer Guide](docs/development.md).
@@ -92,9 +104,11 @@ xdp-l2-guard/
 ├── src/
 │   ├── data_plane/         # Kernel Space (eBPF C code)
 │   └── control_plane/      # User Space (loader & CLI orchestrator)
-├── scripts/                # Setup and traffic generation tools
-├── docs/                   # Technical documentation
-├── lkm_panic/              # LKM crash simulation demo
+├── scripts/
+│   ├── example/            # 3-node namespace demonstration environment
+│   ├── pktgen_flood/       # High-performance packet flooder for stress testing
+│   └── setup_env.sh        # Dependency installation
+├── docs/                   # Diagrams and architecture docs
 ├── Makefile                # CO-RE compilation directives
 └── LICENSE                 # MIT License
 ```
