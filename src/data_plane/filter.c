@@ -1,6 +1,5 @@
 #include "headers.h"
 
-// Action targets enum
 enum xdp_action_target {
     ACTION_PASS = 0,
     ACTION_DROP,
@@ -50,6 +49,16 @@ static __always_inline void swap_ip(struct iphdr *ip) {
     ip->daddr = tmp;
 }
 
+static __always_inline void update_ip_checksum(struct iphdr *ip, __u32 new_daddr) {
+    __u32 old_daddr = ip->daddr;
+    __u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
+    csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
+    csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
+    while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+    ip->check = bpf_htons(~csum & 0xFFFF);
+    ip->daddr = new_daddr;
+}
+
 SEC("xdp")
 int xdp_drop_logic(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
@@ -58,20 +67,17 @@ int xdp_drop_logic(struct xdp_md *ctx) {
     struct ethhdr *eth = data;
     BOUNDS_CHECK(eth, struct ethhdr, data_end);
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-        return XDP_PASS;
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) return XDP_PASS;
 
     struct iphdr *ip = data + sizeof(struct ethhdr);
     BOUNDS_CHECK(ip, struct iphdr, data_end);
 
-    __u32 dst_ip = bpf_ntohl(ip->daddr);
+    __u32 dst_ip = ip->daddr;
     struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &dst_ip);
     
     bpf_printk("XDP: lookup ip=%pI4 hex=%x cfg=%p", &dst_ip, dst_ip, cfg);
 
-    if (!cfg) {
-        return XDP_PASS;
-    }
+    if (!cfg) return XDP_PASS;
 
     switch (cfg->target) {
         case ACTION_DROP: {
@@ -88,17 +94,11 @@ int xdp_drop_logic(struct xdp_md *ctx) {
                 BOUNDS_CHECK(icmp, struct icmphdr, data_end);
 
                 if (icmp->type == ICMP_ECHO) {
-                    // 1. Change to Reply
                     icmp->type = ICMP_ECHOREPLY;
-                    
-                    // 2. Fix ICMP Checksum (Type 8 -> 0 is -0x0800 in sum)
-                    // We add 0x0800 to the 1's complement checksum
-                    __u32 temp_csum = bpf_ntohs(icmp->checksum);
-                    temp_csum += 0x0800;
+                    __u32 temp_csum = bpf_ntohs(icmp->checksum) + 0x0800;
                     if (temp_csum > 0xFFFF) temp_csum -= 0xFFFF;
                     icmp->checksum = bpf_htons(temp_csum);
 
-                    // 3. Swap and Send
                     swap_mac(eth);
                     swap_ip(ip);
                     return XDP_TX;
@@ -108,39 +108,16 @@ int xdp_drop_logic(struct xdp_md *ctx) {
         }
 
         case ACTION_REDIRECT: {
-            // If new_ip is set, perform DNAT before redirecting
             if (cfg->new_ip) {
-                __u32 old_daddr = ip->daddr;
-                __u32 new_daddr = cfg->new_ip;
-                
-                __u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
-                csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
-                csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
-                while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
-                ip->check = bpf_htons(~csum & 0xFFFF);
-                
-                ip->daddr = new_daddr;
+                update_ip_checksum(ip, cfg->new_ip);
             }
-
             int err = bpf_redirect_map(&dev_map, cfg->ifindex, 0);
             bpf_printk("XDP: redirect dnat=%pI4 ifindex=%u res=%d", &cfg->new_ip, cfg->ifindex, err);
             return err;
         }
 
         case ACTION_NAT: {
-            // Simple DNAT (Destination IP change)
-            // Fix IP Checksum (Incremental)
-            __u32 old_daddr = ip->daddr;
-            __u32 new_daddr = cfg->new_ip;
-            
-            __u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
-            // Subtract old, add new (using 16-bit halves)
-            csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
-            csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
-            while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
-            ip->check = bpf_htons(~csum & 0xFFFF);
-            
-            ip->daddr = new_daddr;
+            update_ip_checksum(ip, cfg->new_ip);
             return XDP_PASS;
         }
 

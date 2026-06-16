@@ -8,7 +8,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-// Minimal ICMP header to avoid toolchain issues
 struct icmphdr {
   __u8		type;
   __u8		code;
@@ -30,9 +29,6 @@ struct icmphdr {
 #define ICMP_ECHO		8
 #define ICMP_ECHOREPLY		0
 
-/* * Helper macro for memory boundary verification (Bounds Checking).
- * Ensures safe packet parsing and satisfies the eBPF Verifier requirements.
- */
 #define BOUNDS_CHECK(pointer, type, data_end) \
     do { \
         if ((void *)(pointer) + sizeof(type) > (void *)(data_end)) \
