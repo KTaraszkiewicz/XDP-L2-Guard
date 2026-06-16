@@ -11,100 +11,89 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import setup_logger, int_to_ip
 
 def run_cmd(cmd):
-    """Helper function to execute shell commands"""
     return subprocess.run(cmd, shell=True, text=True, capture_output=True)
 
 def main():
     parser = argparse.ArgumentParser(description="XDP-L2-Guard CO-RE Control Plane")
-    parser.add_argument("-i", "--interface", required=True, help="Network interface, e.g., eth0")
-    parser.add_argument("--generic", action="store_true", help="Force XDP generic mode (xdpgeneric)")
+    parser.add_argument("-i", "--interface", required=True, help="Network interface")
+    parser.add_argument("--generic", action="store_true", help="Force XDP generic mode")
+    parser.add_argument("-n", "--non-interactive", action="store_true", help="Exit after attachment")
     args = parser.parse_args()
 
     logger = setup_logger()
     interface = args.interface
-
-    # Paths
     control_plane_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(control_plane_dir, "../../"))
     bpf_obj_file = os.path.join(project_root, "src/data_plane/filter.o")
 
-    logger.info(f"Initializing CO-RE engine on interface: {interface}")
+    logger.info(f"Initializing engine on {interface}")
 
-    # 1. Ahead-of-Time compilation via Makefile
-    logger.info("Triggering Ahead-of-Time (AOT) compilation...")
-    compile_res = run_cmd(f"cd {project_root} && make")
+    compile_res = run_cmd(f"make -C {project_root}")
     if compile_res.returncode != 0:
-        logger.error(f"CO-RE compilation error:\n{compile_res.stderr}")
+        logger.error(f"Compilation error:\n{compile_res.stderr}")
         sys.exit(1)
     
     if not os.path.exists(bpf_obj_file):
-        logger.error("Critical error: Compiled filter.o file not found!")
+        logger.error("Error: filter.o not found")
         sys.exit(1)
 
-    # 2. Select execution mode (Native / Generic)
     xdp_mode = "xdpgeneric" if args.generic else "xdpdrv"
     if not args.generic:
-        logger.info("Requesting high-performance mode: attaching in Native (xdpdrv)...")
+        logger.info("Attaching in native mode")
 
-    # 3. Attach ELF object to the network interface using native iproute2
-    # Clean previous rules to remove potential "zombie" programs
     run_cmd(f"ip link set dev {interface} xdpgeneric off")
     run_cmd(f"ip link set dev {interface} xdpdrv off")
     run_cmd(f"ip link set dev {interface} xdp off") 
     
-    # -force flag: Ensures overwriting of old XDP programs in the kernel
-    attach_cmd = f"ip -force link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp"
-    attach_res = run_cmd(attach_cmd)
+    attach_res = run_cmd(f"ip -force link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp")
     
     if attach_res.returncode != 0:
-        logger.error(f"Critical error mounting subsystem:\n{attach_res.stderr}")
-        logger.info(f"Hint: Ensure you have disabled hardware offloading using: sudo ethtool -K {interface} gro off gso off")
+        logger.error(f"Mount error:\n{attach_res.stderr}")
         sys.exit(1)
 
-    logger.info("Successfully attached CO-RE ELF to the eXpress Data Path.")
-    logger.info("Engine running. Asynchronous monitoring active (press Ctrl+C to abort).")
+    logger.info("Attached to XDP")
+    
+    if args.non_interactive:
+        return
 
-    # 4. Polling eBPF maps via bpftool
+    logger.info("Monitoring active (Ctrl+C to abort)")
+
     try:
         while True:
             time.sleep(1)
-            # Dump blacklist_ips map in JSON format
-            dump_res = run_cmd("bpftool -j map dump name blacklist_ips")
+            dump_res = run_cmd("bpftool -j map dump name action_map")
             
             if dump_res.returncode == 0 and dump_res.stdout.strip():
                 map_data = json.loads(dump_res.stdout)
-                
-                if len(map_data) > 0:
-                    print("\n" + "━"*50)
-                    logger.info("Active drops at the eXpress Data Path layer:")
-                    
+                if map_data:
+                    print("\n" + "-"*50)
+                    logger.info("Active drops:")
                     for item in map_data:
-                        # bpftool returns hex arrays, e.g., ["0xc0", "0xa8", "0x01", "0x64"]
-                        key_bytes = [int(x, 16) for x in item["key"]]
-                        val_bytes = [int(x, 16) for x in item["value"]]
-                        
-                        # Decode little-endian to native types
-                        ip_int = struct.unpack("<I", bytes(key_bytes))[0]
-                        drop_count = struct.unpack("<Q", bytes(val_bytes))[0]
-                        
-                        ip_addr = int_to_ip(ip_int)
-                        logger.info(f" ➔ Source address [{ip_addr}] blocked: {drop_count} frames")
-                    print("━"*50)
+                        try:
+                            drop_count = item["value"]["dropped_packets"]
+                            ip_addr = int_to_ip(item["key"])
+                            logger.info(f" -> Source [{ip_addr}] blocked: {drop_count} pkts")
+                        except Exception:
+                            key_bytes = bytes([int(x, 16) for x in item["key"]])
+                            val_bytes = bytes([int(x, 16) for x in item["value"]])
+                            ip_addr = int_to_ip(struct.unpack("<I", key_bytes)[0])
+                            drop_count = struct.unpack("<Q", val_bytes[16:24])[0]
+                            logger.info(f" -> Source [{ip_addr}] blocked: {drop_count} pkts")
+                    print("-"*50)
                 else:
-                    sys.stdout.write("🛡️ ")
+                    sys.stdout.write(". ")
                     sys.stdout.flush()
             else:
-                sys.stdout.write("🛡️ ")
+                sys.stdout.write(". ")
                 sys.stdout.flush()
 
     except KeyboardInterrupt:
-        print("\n")
-        logger.info("SIGINT caught. Dismantling Data Plane logic...")
+        print()
+        logger.info("SIGINT caught. Dismantling...")
     finally:
-        # 5. Safe detachment of CO-RE environment
         run_cmd(f"ip link set dev {interface} {xdp_mode} off")
         run_cmd(f"ip link set dev {interface} xdp off")
-        logger.info(f"Rules detached from {interface}. DMA memory released.")
+        logger.info(f"Detached from {interface}")
 
 if __name__ == "__main__":
     main()

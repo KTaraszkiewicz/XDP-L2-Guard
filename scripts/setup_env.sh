@@ -1,43 +1,64 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status
+# XDP-L2-Guard Environment Setup
+# Targeted for Ubuntu 24.04+ (Kernel 5.15+)
+
 set -e
 
-echo "🚀 Starting XDP-L2-Guard environment configuration (CO-RE Standard)..."
+echo "-------------------------------------------------------"
+echo "🛡️  Starting XDP-L2-Guard Environment Configuration"
+echo "-------------------------------------------------------"
 
-# 1. Verify kernel version (5.15+ required)
-KERNEL_VERSION=$(uname -r)
-echo "🛡️ Detected kernel version: $KERNEL_VERSION"
-
-# 2. Update repositories and install base packages
-echo "📦 Installing base packages, compilers, and system tools..."
-# Required LLVM/Clang tools, kernel headers for AOT compilation, and linux-tools for bpftool
-sudo apt update && sudo apt install -y \
+# 1. Update and install toolchain
+echo "[*] Installing eBPF Toolchain & Development Tools..."
+sudo apt update
+sudo apt install -y \
     clang \
     llvm \
     libbpf-dev \
     linux-headers-$(uname -r) \
     linux-tools-common \
     linux-tools-$(uname -r) \
-    ethtool \
-    net-tools \
     gcc \
-    make
+    make \
+    pkg-config
 
-# 3. Verify cgroup v2 support (required by modern eBPF maps)
+# 2. Install Benchmarking & Monitoring Tools
+echo "[*] Installing Benchmarking Suite (iperf3, hping3, sysstat)..."
+sudo apt install -y \
+    hping3 \
+    iperf3 \
+    sysstat \
+    jq \
+    ethtool \
+    net-tools
+
+# 3. Install Python Dependencies for Orchestrator & Graphs
+echo "[*] Installing Python libraries (matplotlib, numpy)..."
+sudo apt install -y \
+    python3-pip \
+    python3-matplotlib \
+    python3-numpy \
+    python3-psutil
+
+# 4. Verify cgroup v2 support (required for modern BPF maps)
 if grep -q cgroup2 /proc/filesystems; then
-    echo "✅ cgroup v2 support verified."
+    echo "[+] cgroup v2 support verified."
 else
-    echo "⚠️ WARNING: cgroup v2 support missing, please check kernel configuration!"
+    echo "[!] WARNING: cgroup v2 support missing. Map pinning may fail."
 fi
 
-# 4. Optimize interface for XDP Native (Disable hardware offloading)
-# Automatically fetch the default network interface
-INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
-
-echo "🔧 Configuring network interface: $INTERFACE"
-echo "Disabling hardware offloading (GRO, GSO, SG, TSO) to prevent frame segmentation conflicts..."
-# Disable hardware assistance to redirect raw packets directly to the native eBPF loop
-sudo ethtool -K $INTERFACE sg off tso off ufo off gro off gso off || echo "Note: Some ethtool options might not be supported by the virtual network adapter."
-
-echo "🎉 Environment is ready! You can now compile the code using 'make' and launch the orchestrator."
+# 5. Interface Optimization (Host only)
+# Automatically fetch the default network interface to suggest optimization
+DEFAULT_IF=$(ip route | grep default | awk '{print $5}' | head -n 1)
+echo ""
+echo "-------------------------------------------------------"
+echo "✅ Environment is ready!"
+echo ""
+echo "Next steps:"
+echo "1. Run 'make' to compile the Data Plane."
+echo "2. If on Host, disable offloading on your NIC (e.g. $DEFAULT_IF):"
+echo "   sudo ethtool -K $DEFAULT_IF sg off tso off gro off gso off"
+echo "3. Run the benchmark:"
+echo "   sudo python3 scripts/benchmark_runner.py"
+echo "-------------------------------------------------------"
