@@ -36,6 +36,13 @@ struct {
     __uint(max_entries, 1);
 } total_dropped SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 10000);
+} source_stats_map SEC(".maps");
+
 static __always_inline void swap_mac(struct ethhdr *eth) {
     __u8 tmp[ETH_ALEN];
     __builtin_memcpy(tmp, eth->h_source, ETH_ALEN);
@@ -71,6 +78,15 @@ int xdp_drop_logic(struct xdp_md *ctx) {
 
     struct iphdr *ip = data + sizeof(struct ethhdr);
     BOUNDS_CHECK(ip, struct iphdr, data_end);
+
+    __u32 src_ip = ip->saddr;
+    __u64 *pkt_count = bpf_map_lookup_elem(&source_stats_map, &src_ip);
+    if (pkt_count) {
+        __sync_fetch_and_add(pkt_count, 1);
+    } else {
+        __u64 init_count = 1;
+        bpf_map_update_elem(&source_stats_map, &src_ip, &init_count, BPF_ANY);
+    }
 
     __u32 dst_ip = ip->daddr;
     struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &dst_ip);
