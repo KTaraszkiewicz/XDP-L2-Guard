@@ -317,4 +317,56 @@ BPF map creation fails & \texttt{RLIMIT\_MEMLOCK} is too low. & Increase memory 
 \end{tabular}
 \end{center}
 
+\section{Exploring Carrier Ethernet Potential via XDP}
+
+While a standard Linux distribution is not typically used as a core Carrier Ethernet router, modern kernel capabilities provide the building blocks to test these concepts. Carrier Ethernet relies on high-throughput packet delivery and internal labeling mechanisms (like MPLS or VLANs) to route traffic effectively. Our project, XDP-L2-Guard, serves as a small-scale testing ground to understand the potential of eBPF and XDP in these scenarios.
+
+\subsection{Testing Internal Routing Capabilities}
+
+Historically, routing based on MPLS labels in Linux relies on the standard kernel network stack (via modules like \texttt{mpls\_router}), which introduces CPU overhead. Our implementation in \texttt{filter.c} currently focuses on basic IPv4 destination lookups, but it effectively demonstrates the underlying principle required for a Label Switch Router (LSR). 
+
+By operating at the \texttt{XDP} hook, we intercept packets before they reach the kernel's \texttt{sk\_buff} allocation. The \texttt{XDP\_REDIRECT} functionality we tested shows that it is entirely possible to construct a fast-path data plane. While we have not implemented full MPLS parsing, our code proves the potential: eBPF logic could easily be extended to read MPLS labels directly from the \texttt{data} pointers and route packets instantly using a \texttt{dev\_map}.
+
+\subsection{Hardware Offloading and Intel NICs}
+
+We tested XDP-L2-Guard with the goal of understanding Native XDP Mode (\texttt{xdpdrv}) on modern Intel Network Interface Cards (such as the 700 and 800 ice series). In theory, running eBPF bytecode directly inside the NIC's RX queue driver offers performance comparable to DPDK (Data Plane Development Kit, an industry-standard framework that achieves high speeds by completely bypassing the OS kernel to process packets in user space), without leaving the Linux kernel environment.
+
+Although our project is merely a proof-of-concept, it highlights how hardware acceleration (like Intel's Flow Director) combined with XDP can intelligently distribute and process traffic at extremely low latency. Our experiments confirm the theoretical potential of using Linux and Intel hardware to process Carrier-grade traffic.
+
+\section{Testing the Software Switch Concept}
+
+One of the primary goals of XDP-L2-Guard was to explore how eBPF can serve as a foundation for a programmable software switch, and how it compares to traditional firewalling tools.
+
+\subsection{eBPF as an Alternative to iptables}
+
+Traditionally, packet filtering and NAT on Linux rely on \texttt{iptables}. However, \texttt{iptables} uses a sequential list model ($O(n)$ complexity), meaning performance degrades as the rule count grows. Our project allowed us to practically test the performance benefits of eBPF maps. 
+
+By implementing an \texttt{action\_map} (\texttt{BPF\_MAP\_TYPE\_HASH}), our XDP script achieves constant-time $O(1)$ lookups. Although our Python control plane (\texttt{guard.py}) only manages a fraction of the rules a real-world enterprise might use, the fundamental mechanism we demonstrated scales effortlessly, proving the viability of eBPF over legacy \texttt{iptables}.
+
+\subsection{Basic NAT and the Data Plane Potential}
+
+Instead of relying on the kernel's netfilter stack, we implemented a basic \texttt{ACTION\_NAT} in C to test direct packet manipulation. Our code successfully reads destination IPs, rewrites them, and recalculates the 1's complement checksum using bitwise math directly inside \texttt{filter.c}. 
+
+When combined with \texttt{XDP\_REDIRECT}, this creates a rudimentary but high-speed software switch. While XDP-L2-Guard is not a complete, production-ready router, it successfully demonstrates a tiny fraction of eBPF's capabilities, confirming that Linux has the architectural potential to handle complex, high-speed routing and labeling at the lowest possible software level.
+
+\section{Project Summary and Conclusions}
+
+\subsection{Impressions and Lessons Learned}
+
+Executing the XDP-L2-Guard project provided invaluable hands-on experience with the lowest levels of the Linux networking stack. Our primary impression is one of profound capability mixed with steep learning curves. eBPF and XDP offer unprecedented power to intercept and modify packets at wire speed, but this power comes at the cost of strict Verifier constraints and complex C-level memory handling. We successfully proved that we could write a functional data plane capable of parsing IP headers, rewriting checksums, and orchestrating basic NAT or redirects—all before the kernel allocates any standard socket buffers.
+
+\subsection{Why This Project Was Worth Doing}
+
+This project was highly valuable because it demystified the mechanisms behind modern cloud-native networking and software-defined networking (SDN). By building XDP-L2-Guard from scratch, we shifted our understanding of Linux from a simple endpoint or basic firewall into a highly programmable, hardware-adjacent switch. It allowed us to practically experience the limitations of legacy tools like \texttt{iptables} and fully grasp why the industry is rapidly adopting eBPF. The knowledge gained regarding Native XDP, memory bounds-checking, and control/data plane separation forms a critical foundation for modern network engineering.
+
+\subsection{Future Research and Testing Directions}
+
+While XDP-L2-Guard serves as a successful proof-of-concept, there are numerous avenues for potential future exploration:
+\begin{itemize}
+    \item \textbf{Deep Layer-2/Label Parsing:} Expanding \texttt{filter.c} to natively parse, push, and pop MPLS labels or VLAN tags to simulate a complete Carrier Ethernet Label Switch Router (LSR).
+    \item \textbf{Advanced Hardware Tuning:} Further resolving the low-level hardware configuration nuances of Intel NICs to fully unleash Native Mode (\texttt{xdpdrv}) and benchmark it against DPDK-based solutions at 40+ Gbps line rates.
+    \item \textbf{Stateful Tracking:} Transitioning from stateless DNAT to fully stateful connections by implementing connection tracking (conntrack) utilizing eBPF LRU (Least Recently Used) hash maps.
+    \item \textbf{IPv6 Support:} Extending the C codebase and bounds-checking logic to comprehensively handle IPv6 headers and ICMPv6 routing protocols.
+\end{itemize}
+
 \end{document}
