@@ -88,10 +88,9 @@ int xdp_drop_logic(struct xdp_md *ctx) {
         bpf_map_update_elem(&source_stats_map, &src_ip, &init_count, BPF_ANY);
     }
 
-    __u32 dst_ip = ip->daddr;
-    struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &dst_ip);
+    struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &src_ip);
     
-    bpf_printk("XDP: lookup ip=%pI4 hex=%x cfg=%p", &dst_ip, dst_ip, cfg);
+    bpf_printk("XDP: lookup src_ip=%pI4 hex=%x cfg=%p", &src_ip, src_ip, cfg);
 
     if (!cfg) return XDP_PASS;
 

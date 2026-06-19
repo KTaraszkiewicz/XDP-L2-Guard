@@ -12,23 +12,23 @@ if [ -z "$1" ]; then
 fi
 
 ACTION=$1
-GUARD="../../scripts/guard.sh"
+GUARD="../../src/control_plane/guard.py"
 
 case ${ACTION,,} in
     pass)
-        sudo $GUARD -A -s 10.0.0.2 -j PASS
+        sudo ip netns exec ns1 $GUARD -A -s 10.0.0.2 -j PASS
         ;;
     drop)
-        sudo $GUARD -A -s 10.0.0.2 -j DROP
+        sudo ip netns exec ns1 $GUARD -A -s 10.0.0.2 -j DROP
         ;;
     tx)
-        sudo $GUARD -A -s 10.0.0.2 -j TX
+        sudo ip netns exec ns1 $GUARD -A -s 10.0.0.2 -j TX
         ;;
     redirect)
-        sudo $GUARD -A -s 10.0.0.2 -j REDIRECT --oif v1-3 --to-destination 10.0.0.3
+        sudo ip netns exec ns1 $GUARD -A -s 10.0.0.2 -j REDIRECT --oif v1-3 --to-destination 10.0.0.3
         ;;
     nat)
-        sudo $GUARD -A -s 10.0.0.2 -j NAT --to-destination 10.0.0.3
+        sudo ip netns exec ns1 $GUARD -A -s 10.0.0.2 -j NAT --to-destination 10.0.0.3
         ;;
     *)
         echo "Invalid action"

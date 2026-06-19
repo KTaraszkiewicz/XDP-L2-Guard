@@ -28,10 +28,13 @@ def get_map_id(name):
     return res.stdout.split(":")[0].strip()
 
 def get_ifindex(iface):
+    res = run_cmd(f"ip -o link show dev {iface}")
+    if res.returncode != 0 or not res.stdout:
+        return None
     try:
-        with open(f"/sys/class/net/{iface}/ifindex", "r") as f:
-            return int(f.read().strip())
-    except Exception:
+        # Format is "index: name: ..."
+        return int(res.stdout.split(":")[0].strip())
+    except (IndexError, ValueError):
         return None
 
 def main():
@@ -39,7 +42,8 @@ def main():
     parser.add_argument("-A", "--append", action="store_true", help="Add rule")
     parser.add_argument("-D", "--delete", action="store_true", help="Delete rule")
     parser.add_argument("-L", "--list", action="store_true", help="List rules")
-    parser.add_argument("-d", "--destination", help="Destination IP")
+    parser.add_argument("-s", "--source", help="Source IP to filter")
+    parser.add_argument("-d", "--destination", help="Destination IP (alias for source)")
     parser.add_argument("-j", "--jump", choices=["PASS", "DROP", "TX", "REDIRECT", "NAT"], help="Action target")
     parser.add_argument("--to-destination", help="NAT destination IP")
     parser.add_argument("--oif", help="Redirect output interface")
@@ -54,7 +58,7 @@ def main():
         sys.exit(1)
 
     if args.list:
-        print(f"{'DESTINATION IP':<15} | {'ACTION':<10} | {'PKTS':<8} | {'DETAILS'}")
+        print(f"{'SOURCE IP':<15} | {'ACTION':<10} | {'PKTS':<8} | {'DETAILS'}")
         print("-" * 60)
         res = run_cmd(f"bpftool -j map dump id {act_map_id}")
         if res.stdout:
@@ -74,9 +78,11 @@ def main():
                 print(f"{ip:<15} | {act_str:<10} | {dropped:<8} | {details}")
         return
 
+    target_ip = args.source or args.destination
+
     if args.append:
-        if not args.destination or not args.jump:
-            print("Error: -A requires -d <IP> and -j <ACTION>")
+        if not target_ip or not args.jump:
+            print("Error: -A requires -s <IP> and -j <ACTION>")
             sys.exit(1)
 
         target = {"PASS": ACTION_PASS, "DROP": ACTION_DROP, "TX": ACTION_TX, "REDIRECT": ACTION_REDIRECT, "NAT": ACTION_NAT}[args.jump]
@@ -103,21 +109,21 @@ def main():
             run_cmd(f"bpftool map update id {dev_map_id} key hex {ifindex_hex} value hex {ifindex_hex}")
 
         val_hex = " ".join([f"{b:02x}" for b in struct.pack("<IIIIQ", target, new_ip_int, ifindex, 0, 0)])
-        res = run_cmd(f"bpftool map update id {act_map_id} key hex {ip_to_hex(args.destination)} value hex {val_hex}")
+        res = run_cmd(f"bpftool map update id {act_map_id} key hex {ip_to_hex(target_ip)} value hex {val_hex}")
         
         if res.returncode == 0:
-            print(f"Added rule: {args.destination} -> {args.jump}")
+            print(f"Added rule: {target_ip} -> {args.jump}")
         else:
             print(f"Error adding rule: {res.stderr}")
 
     elif args.delete:
-        if not args.destination:
-            print("Error: -D requires -d <IP>")
+        if not target_ip:
+            print("Error: -D requires -s <IP>")
             sys.exit(1)
         
-        res = run_cmd(f"bpftool map delete id {act_map_id} key hex {ip_to_hex(args.destination)}")
+        res = run_cmd(f"bpftool map delete id {act_map_id} key hex {ip_to_hex(target_ip)}")
         if res.returncode == 0:
-            print(f"Deleted rule for {args.destination}")
+            print(f"Deleted rule for {target_ip}")
         else:
             print(f"Error deleting rule: {res.stderr}")
 
