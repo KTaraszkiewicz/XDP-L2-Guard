@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 879.206 1049.3" width="879.206" height="1049.3" style="--bg:#FFFFFF;--fg:#27272A;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="UserSpace" data-label=" ">
+  <rect x="515.6056666666666" y="40" width="139.15800000000002" height="96.9" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="515.6056666666666" y="40" width="139.15800000000002" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="527.6056666666666" y="54" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999"> </text>
+</g>
+<g class="subgraph" data-id="NetStack" data-label="Networking Stack">
+  <rect x="289.54650000000004" y="184.89999999999998" width="521.6595" height="581.4" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="289.54650000000004" y="184.89999999999998" width="521.6595" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="301.54650000000004" y="198.89999999999998" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Networking Stack</text>
+<g class="subgraph" data-id="Transport" data-label=" ">
+  <rect x="305.54650000000004" y="337.7999999999999" width="105.81299999999999" height="210.70000000000002" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="305.54650000000004" y="337.7999999999999" width="105.81299999999999" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="317.54650000000004" y="351.7999999999999" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999"> </text>
+</g>
+<g class="subgraph" data-id="Network" data-label=" ">
+  <rect x="420.7545" y="596.5" width="100.626" height="153.8" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="420.7545" y="596.5" width="100.626" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="432.7545" y="610.5" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999"> </text>
+</g>
+</g>
+<g class="subgraph" data-id="DriverLayer" data-label=" ">
+  <rect x="354.741" y="814.3" width="294.453" height="182" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="354.741" y="814.3" width="294.453" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="366.741" y="828.3" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999"> </text>
+</g>
+<g class="subgraph" data-id="HWLayer" data-label=" ">
+  <rect x="40" y="814.3" width="294.741" height="195" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="40" y="814.3" width="294.741" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="52" y="828.3" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999"> </text>
+</g>
+<polyline class="edge" data-from="Network" data-to="Transport" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="164.75,411.59999999999997 164.75,399.59999999999997 68.9065,399.59999999999997 68.9065,363.5999999999999" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="NIC" data-to="Driver" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="318.741,925.8 334.741,925.8 344.741,925.8 344.741,858.3 354.741,858.3 493.741,858.3 493.741,885.4 529.741,885.4" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Driver" data-to="SKB" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="633.194,891.55 649.194,891.55 659.194,891.55 659.194,766.3 659.194,584.5 671.0328333333333,584.5 671.0328333333334,483.08333333333326" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Qdisc" data-to="Network" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="694.944,252.89999999999998 694.944,240.89999999999998 639.313,240.89999999999998 639.313,184.89999999999998 831.206,184.89999999999998 831.206,56 349.76649999999995,56 294.1355,56 294.1355,399.59999999999997 198.292,399.59999999999997 198.292,411.59999999999997" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Transport" data-to="Sockets" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="68.9065,152.89999999999992 68.9065,0 20,0 20,240.89999999999998 358.45300000000003,240.89999999999998 437.52933333333334,240.89999999999998 437.52933333333334,252.89999999999998" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Sockets" data-to="App" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="505.60566666666665,252.89999999999998 505.60566666666665,184.89999999999998 505.60566666666665,102.44999999999993 515.6056666666666,102.45 531.6056666666666,102.45" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="SKB" data-to="Qdisc" data-style="thick" data-arrow-start="false" data-arrow-end="true" points="694.944,446.1833333333333 694.944,289.79999999999995" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Generic" data-to="SKB" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="730.694,596.5 730.694,584.5 718.8551666666667,584.5 718.8551666666667,483.08333333333326" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="Native" data-to="Driver" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="481.741,919.3 493.741,919.3 493.741,897.6999999999999 529.741,897.6999999999999" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="Offload" data-to="NIC" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="191,931.3 239,931.3" fill="none" stroke="var(--_line)" stroke-width="1" />
+<g class="node" data-id="App" data-label="Application" data-shape="rectangle">
+  <rect x="531.6056666666666" y="84" width="107.158" height="36.900000000000006" rx="0" ry="0" fill="#d1e2ff" stroke="#333" stroke-width="2px" />
+  <text x="585.1846666666665" y="102.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Application</text>
+</g>
+<g class="node" data-id="Sockets" data-label="sockets (send/recv buffers)" data-shape="rectangle">
+  <rect x="369.45300000000003" y="252.89999999999998" width="204.22899999999996" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="471.5675" y="271.34999999999997" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">sockets (send/recv buffers)</text>
+</g>
+<g class="node" data-id="Qdisc" data-label="Queueing Discipline (qdisc)" data-shape="rectangle">
+  <rect x="594.682" y="252.89999999999998" width="200.52399999999997" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="694.944" y="271.34999999999997" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Queueing Discipline (qdisc)</text>
+</g>
+<g class="node" data-id="SKB" data-label="sk_buff allocation" data-shape="rectangle">
+  <rect x="623.2105" y="446.1833333333333" width="143.467" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="694.9440000000001" y="464.63333333333327" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">sk_buff allocation</text>
+</g>
+<g class="node" data-id="Generic" data-label="🐝 Generic" data-shape="circle">
+  <circle cx="730.694" cy="657" r="60.5" fill="#fff4dd" stroke="#d4a017" stroke-width="0.75" />
+  <text x="730.694" y="657" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">🐝 Generic</text>
+</g>
+<g class="node" data-id="TCP" data-label="TCP" data-shape="rectangle">
+  <rect x="321.54650000000004" y="381.7999999999999" width="68.62599999999999" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="355.8595" y="400.2499999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">TCP</text>
+</g>
+<g class="node" data-id="UDP" data-label="UDP" data-shape="rectangle">
+  <rect x="321.54650000000004" y="446.1833333333333" width="68.62599999999999" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="355.8595" y="464.63333333333327" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">UDP</text>
+</g>
+<g class="node" data-id="ICMP" data-label="ICMP" data-shape="rectangle">
+  <rect x="321.54650000000004" y="495.5999999999999" width="73.81299999999999" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="358.45300000000003" y="514.05" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">ICMP</text>
+</g>
+<g class="node" data-id="IPv4" data-label="IPv4" data-shape="rectangle">
+  <rect x="436.7545" y="640.5" width="68.626" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="471.0675" y="658.95" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">IPv4</text>
+</g>
+<g class="node" data-id="IPv6" data-label="IPv6" data-shape="rectangle">
+  <rect x="436.7545" y="697.4" width="68.626" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="471.0675" y="715.85" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">IPv6</text>
+</g>
+<g class="node" data-id="Driver" data-label="NIC Driver" data-shape="rectangle">
+  <rect x="529.741" y="873.0999999999999" width="103.453" height="36.900000000000006" rx="0" ry="0" fill="#fff" stroke="#333" stroke-width="0.75" />
+  <text x="581.4675" y="891.55" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">NIC Driver</text>
+</g>
+<g class="node" data-id="Native" data-label="🐝 Native" data-shape="circle">
+  <circle cx="426.241" cy="919.3" r="55.5" fill="#fff4dd" stroke="#d4a017" stroke-width="0.75" />
+  <text x="426.241" y="919.3" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">🐝 Native</text>
+</g>
+<g class="node" data-id="NIC" data-label="🌐 NIC" data-shape="rectangle">
+  <rect x="239" y="907.3499999999999" width="79.741" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="278.8705" y="925.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">🌐 NIC</text>
+</g>
+<g class="node" data-id="Offload" data-label="🐝 HW Offload" data-shape="circle">
+  <circle cx="123.5" cy="931.3" r="67.5" fill="#fff4dd" stroke="#d4a017" stroke-width="0.75" />
+  <text x="123.5" y="931.3" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">🐝 HW Offload</text>
+</g>
+</svg>
