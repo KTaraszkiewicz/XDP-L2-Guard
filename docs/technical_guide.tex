@@ -65,6 +65,37 @@ XDP-L2-Guard is a high-performance, programmable network orchestration filter le
 \tableofcontents
 \vspace{1cm}
 
+\section{eBPF vs. Traditional Linux Kernel Modules}
+
+Historically, modifying or extending the behavior of the Linux kernel required writing a Linux Kernel Module (LKM) or recompiling the kernel source code. While LKMs have full privileges and unrestricted access to kernel memory and execution flows, they inherently introduce significant risks. A bug in an LKM, such as a null pointer dereference or an infinite loop, can instantly lead to a kernel panic, crashing the entire operating system. Furthermore, LKMs pose security risks as they run with unrestricted Ring 0 privileges without built-in isolation.
+
+eBPF (Extended Berkeley Packet Filter) introduces a fundamentally different operational paradigm. It allows developers to safely execute custom bytecode within the kernel without changing kernel source code or loading standard modules. 
+
+\subsection{Method of Operation and Privilege Acquisition}
+
+Unlike a traditional kernel module that is linked directly against kernel symbols and executed natively as kernel code, eBPF programs are injected into the kernel via the \texttt{bpf()} system call from user-space. However, before any eBPF program is allowed to execute, it must pass through a strict \textbf{Kernel Verifier}. 
+
+The Verifier performs static analysis on the eBPF bytecode to guarantee that the program is safe to run. It ensures that:
+\begin{itemize}
+    \item There are no infinite loops (all programs must terminate).
+    \item All memory accesses are strictly bounds-checked.
+    \item No uninitialized variables are used.
+    \item The program size does not exceed strict complexity limits.
+\end{itemize}
+
+Once the Verifier approves the bytecode, the eBPF \textbf{JIT (Just-In-Time) Compiler} translates the bytecode into native machine instructions (e.g., x86\_64 or ARM64) specific to the host hardware. This JIT-compiled code then runs at near-native speed directly in kernel space.
+
+Thus, eBPF obtains kernel privileges not by bypassing security layers, but by mathematically proving to the kernel that its execution is safe. It cannot access arbitrary kernel memory; it is strictly limited to context-specific data structures (like the \texttt{xdp\_md} struct for packet data) and predefined kernel helper functions (\texttt{bpf\_helpers}) that provide a safe API to interact with the broader system.
+
+\subsection{Key Benefits of eBPF over LKMs}
+
+\begin{itemize}
+    \item \textbf{Safety and Stability:} The rigorous verification process ensures that an eBPF program cannot crash the system. If the code violates memory boundaries or takes too long to execute, the Verifier simply rejects it at load time.
+    \item \textbf{Dynamic Loading and Updates:} eBPF programs can be loaded, updated, and unloaded on the fly without system reboots or network interruptions. This enables dynamic and seamless updates to packet filtering rules.
+    \item \textbf{High Performance:} Thanks to JIT compilation, eBPF programs run at native speeds. In the context of XDP, this allows packet processing to occur directly in the NIC driver before the kernel even allocates memory (\texttt{sk\_buff}), yielding sub-microsecond latency.
+    \item \textbf{Security and Isolation:} Because eBPF is constrained to specific hooks and helpers, it dramatically reduces the attack surface compared to an LKM that has absolute control over the system.
+\end{itemize}
+
 \section{System Architecture and Paradigm}
 
 The system is strictly architected around the paradigm of control/data plane separation. The \textbf{Data Plane} is written in restricted C, compiled via Clang/LLVM into eBPF bytecode, and executes securely within the kernel context. The \textbf{Control Plane} utilizes Python 3 to orchestrate the lifecycle of the eBPF program, utilizing \texttt{iproute2} and \texttt{bpftool} to manage asynchronous state updates.
