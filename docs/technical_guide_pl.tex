@@ -12,6 +12,8 @@
 \usepackage{tcolorbox}
 \usepackage{tikz}
 \usepackage{needspace}
+\usepackage{float}
+\usepackage[section]{placeins}
 \usepackage{etoolbox}
 
 % Page-breaking and layout preservation adjustments
@@ -82,7 +84,7 @@ eBPF (Extended Berkeley Packet Filter) wprowadza zasadniczo inny paradygmat dzia
 
 \subsection{Metoda działania i uzyskiwanie uprawnień}
 
-W przeciwieinteswie do tradycyjnego modułu jądra, który jest konsolidowany bezpośrednio z symbolami jądra i wykonywany natywnie jako kod jądra, programy eBPF są wstrzykiwane do jądra za pomocą wywołania systemowego \texttt{bpf()} z przestrzeni użytkownika. Zanim jednak jakikolwiek program eBPF zostanie dopuszczony do wykonania, musi przejść przez rygorystyczny \textbf{weryfikator jądra (Kernel Verifier)}. 
+W przeciwieństwie do tradycyjnego modułu jądra, który jest konsolidowany bezpośrednio z symbolami jądra i wykonywany natywnie jako kod jądra, programy eBPF są wstrzykiwane do jądra za pomocą wywołania systemowego \texttt{bpf()} z przestrzeni użytkownika. Zanim jednak jakikolwiek program eBPF zostanie dopuszczony do wykonania, musi przejść przez rygorystyczny \textbf{weryfikator jądra (Kernel Verifier)}. 
 
 Weryfikator przeprowadza statyczną analizę kodu bajtowego eBPF, aby zagwarantować, że program jest bezpieczny do uruchomienia. Zapewnia on, że:
 \begin{itemize}
@@ -308,6 +310,40 @@ sudo ./setup.sh
 
 Ta konfiguracja udowadnia, że złożone operacje warstwy 2 (REDIRECT) oraz warstwy 3 (NAT) zachodzą w całości w warstwie eBPF, całkowicie omijając konwencjonalną logikę routingu w \texttt{ns1}.
 
+\subsection{Przewodnik po wykonaniu krok po kroku}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_setup.png}
+    \caption{Dane wyjściowe terminala pokazujące pomyślne utworzenie wirtualnych par Ethernet, konfigurację przestrzeni nazw oraz podłączenie programu XDP.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_baseline.png}
+    \caption{Standardowe odpowiedzi ICMP echo przechodzące przez stos jądra.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_guard_action.png}
+    \caption{Dodawanie reguły DROP do mapy akcji BPF.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_dropped.png}
+    \caption{Wpływ polityki XDP: utrata pakietów w czasie rzeczywistym po wdrożeniu akcji XDP\_DROP.}
+\end{figure}
+
+\subsubsection{Faza 5: Przezroczyste przekierowanie}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_redirect.png}
+    \caption{Działanie XDP\_REDIRECT w praktyce: ruch przeznaczony dla adresu 10.0.0.1 jest w przezroczysty sposób przechwytywany i kierowany do docelowej przestrzeni nazw (ns3) na poziomie sterownika.}
+\end{figure}
+
+\FloatBarrier
 \section{Operacyjny DevOps i diagnostyka}
 
 \subsection{Strojenie wydajności i rzeczywiste limity}
@@ -338,7 +374,7 @@ Reguły nałożone, brak odrzucania & Podłączono do niewłaściwego interfejsu
 \texttt{EBUSY} podczas podłączania & Inny program XDP jest już załadowany. & Użyj flagi \texttt{-force} w poleceniu \texttt{ip link set dev <iface> xdp obj ...} \\ \hline
 Wysokie zużycie CPU przez SoftIRQ & Blokowanie zasobów (lock contention) na mapie \texttt{total\_dropped}. & Zrefaktoryzuj mapę do \texttt{BPF\_MAP\_TYPE\_PERCPU\_ARRAY}. \\ \hline
 Pakiety omijają filtr & Aktywne jest sprzętowe odciążenie (offloading). & Wyłącz GRO/LRO za pomocą \texttt{ethtool -K <iface> gro off}. \\ \hline
-Błąd tworzenia mapy BPF & Limit \texttt{RLIMIT\_MEMLOCK} jest zbyt niski. & Zwiększ limity pamięci: \texttt{ulimit -l unlimited}. \\ \hline
+Błąd tworzenia mapy BPF & Limit \texttt{RLIMIT\_MEMLOCK} is too low. & Zwiększ limity pamięci: \texttt{ulimit -l unlimited}. \\ \hline
 Ciche niepowodzenie \texttt{XDP\_TX} & Niepoprawne ponowne obliczenie sumy kontrolnej. & Zweryfikuj matematykę dopełnienia do jedynki. Upewnij się, że logika zamiany adresów MAC jest poprawna. \\ \hline
 \end{tabular}
 \end{center}
@@ -391,7 +427,7 @@ Ten projekt był niezwykle wartościowy, ponieważ odmitologizował mechanizmy s
 
 \subsection{Kierunki przyszłych badań i testów}
 
-Choć XDP-L2-Guard służy jako udany dowód koncepcji (proof-of-concept), istnieje wiele dróg potencjalnej przyszłej eksploracji:
+Choć XDP-L2-Guard serves jako udany dowód koncepcji (proof-of-concept), istnieje wiele dróg potencjalnej przyszłej eksploracji:
 \begin{itemize}
     \item \textbf{Głębokie parsowanie warstwy 2/etykiet:} Rozszerzenie kodu \texttt{filter.c} w celu natywnego parsowania, dodawania (push) i zdejmowania (pop) etykiet MPLS lub tagów VLAN, aby zasymulować kompletny router Carrier Ethernet LSR (Label Switch Router).
     \item \textbf{Zaawansowane strojenie sprzętowe:} Dalsze rozwiązywanie niskopoziomowych niuansów konfiguracji sprzętowej kart sieciowych Intel, aby w pełni odblokować tryb natywny (\texttt{xdpdrv}) i porównać go z rozwiązaniami opartymi na DPDK przy przepustowościach rzędu 40+ Gbps.
