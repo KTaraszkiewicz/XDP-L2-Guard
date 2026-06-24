@@ -12,6 +12,8 @@
 \usepackage{tcolorbox}
 \usepackage{tikz}
 \usepackage{needspace}
+\usepackage{float}
+\usepackage[section]{placeins}
 \usetikzlibrary{shapes.geometric, arrows, positioning, shadows, fit, calc}
 
 \geometry{margin=1in}
@@ -283,6 +285,40 @@ sudo ./setup.sh
 
 This setup proves that complex Layer-2 (REDIRECT) and Layer-3 (NAT) operations occur entirely within the eBPF layer, completely bypassing the conventional routing logic in \texttt{ns1}.
 
+\subsection{Step-by-Step Execution Walkthrough}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_setup.png}
+    \caption{Terminal output showing the successful creation of virtual Ethernet pairs, namespace setup, and XDP program attachment.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_baseline.png}
+    \caption{Standard ICMP echo replies passing through the kernel stack.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_guard_action.png}
+    \caption{Appending a DROP rule to the BPF action map}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_dropped.png}
+    \caption{The impact of the XDP policy: real-time packet loss as the XDP\_DROP action is enforced.}
+\end{figure}
+
+\subsubsection{Phase 5: Transparent Redirection}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_redirect.png}
+    \caption{XDP\_REDIRECT in action: Traffic intended for 10.0.0.1 is transparently intercepted and routed to the target namespace (ns3) at the driver level.}
+\end{figure}
+
+\FloatBarrier
 \section{Operational DevOps \& Diagnostics}
 
 \subsection{Performance Tuning \& Real-World Limits}
