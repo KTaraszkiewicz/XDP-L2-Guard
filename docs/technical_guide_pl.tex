@@ -1,0 +1,402 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usepackage{needspace}
+\usepackage{etoolbox}
+
+% Page-breaking and layout preservation adjustments
+\widowpenalty=10000
+\clubpenalty=10000
+\pretocmd{\section}{\needspace{5\baselineskip}}{}{}
+\pretocmd{\subsection}{\needspace{4\baselineskip}}{}{}
+\pretocmd{\subsubsection}{\needspace{3\baselineskip}}{}{}
+
+\usetikzlibrary{shapes.geometric, arrows, positioning, shadows, fit, calc}
+
+\geometry{margin=1in}
+
+% Style adjustments for continuous flow
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries\color{primary}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\color{primary}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{secondary}}{\thesubsubsection}{1em}{}
+
+\definecolor{primary}{RGB}{0, 102, 204}
+\definecolor{secondary}{RGB}{102, 102, 102}
+\definecolor{codebg}{RGB}{245, 245, 245}
+\definecolor{cmdcolor}{RGB}{0, 128, 0}
+\definecolor{warning}{RGB}{200, 0, 0}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    filecolor=magenta,      
+    urlcolor=primary,
+    pdftitle={XDP-L2-Guard: Szczegółowy podręcznik techniczny},
+    pdfpagemode=UseNone,
+}
+
+\lstset{
+    backgroundcolor=\color{codebg} ,
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{secondary},
+    keywordstyle=\color{primary},
+    commentstyle=\color{secondary},
+    stringstyle=\color{cmdcolor},
+    captionpos=b,
+    keepspaces=true,
+}
+
+\title{\textbf{XDP-L2-Guard: Techniczny podręcznik referencyjny \\ \large Wysokowydajna orkiestracja ruchu w warstwie 2 i 3 za pomocą eBPF/XDP}}
+\author{Krzysztof Taraszkiewicz \\ Józef Sztabiński}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+XDP-L2-Guard to wysokowydajny, programowalny filtr orkiestracji sieciowej wykorzystujący mechanizm Linux eXpress Data Path (XDP). Działając bezpośrednio w punkcie podpięcia (hook) sterownika karty sieciowej (NIC), zapewnia możliwość przetwarzania pakietów w czasie poniżej mikrosekundy dla ruchu w warstwie 2 i 3. Umożliwia to odrzucanie pakietów z prędkością łącza (wire-speed), przekierowywanie pakietów, hairpinning oraz translację adresów sieciowych (NAT) ze śledzeniem stanu przed alokacją buforów gniazd (\texttt{sk\_buff}) przez jądro Linuksa. Niniejszy podręcznik służy jako wyczerpujące, niskopoziomowe odniesienie techniczne obejmujące struktury pamięci na poziomie języka C, zarządzanie CO-RE w języku Python, algorytmy sum kontrolnych oraz strategie wdrażania.
+\end{abstract}
+
+\tableofcontents
+\vspace{1cm}
+
+\section{eBPF a tradycyjne moduły jądra Linuksa}
+
+Historycznie rzecz biorąc, modyfikowanie lub rozszerzanie zachowania jądra Linuksa wymagało napisania modułu jądra Linuksa (LKM – Linux Kernel Module) lub rekompilacji kodu źródłowego jądra. Chociaż moduły LKM mają pełne uprawnienia i nieograniczony dostęp do pamięci jądra oraz przepływów wykonania, ze swojej natury niosą ze sobą poważne ryzyko. Błąd w module LKM, taki jak dereferencja wskaźnika zerowego lub nieskończona pętla, może natychmiast doprowadzić do paniki jądra (kernel panic), powodując awarię całego systemu operacyjnego. Ponadto moduły LKM stanowią zagrożenie dla bezpieczeństwa, ponieważ działają z nieograniczonymi uprawnieniami Ring 0 bez wbudowanej izolacji.
+
+eBPF (Extended Berkeley Packet Filter) wprowadza zasadniczo inny paradygmat działania. Umożliwia programistom bezpieczne wykonywanie niestandardowego kodu bajtowego (bytecode) wewnątrz jądra bez zmiany kodu źródłowego jądra lub ładowania standardowych modułów. 
+
+\subsection{Metoda działania i uzyskiwanie uprawnień}
+
+W przeciwieinteswie do tradycyjnego modułu jądra, który jest konsolidowany bezpośrednio z symbolami jądra i wykonywany natywnie jako kod jądra, programy eBPF są wstrzykiwane do jądra za pomocą wywołania systemowego \texttt{bpf()} z przestrzeni użytkownika. Zanim jednak jakikolwiek program eBPF zostanie dopuszczony do wykonania, musi przejść przez rygorystyczny \textbf{weryfikator jądra (Kernel Verifier)}. 
+
+Weryfikator przeprowadza statyczną analizę kodu bajtowego eBPF, aby zagwarantować, że program jest bezpieczny do uruchomienia. Zapewnia on, że:
+\begin{itemize}
+    \item Nie ma nieskończonych pętli (wszystkie programy muszą się zakończyć).
+    \item Wszystkie dostępy do pamięci są ściśle kontrolowane pod kątem granic zakresu (bounds-checked).
+    \item Nie są używane żadne niezainicjalizowane zmienne.
+    \item Rozmiar programu nie przekracza rygorystycznych limitów złożoności.
+\end{itemize}
+
+Gdy weryfikator zatwierdzi kod bajtowy, \textbf{kompilator JIT (Just-In-Time) eBPF} tłumaczy kod bajtowy na natywne instrukcje maszynowe (np. x86\_64 lub ARM64) specyficzne dla sprzętu hosta. Ten skompilowany przez JIT kod działa następnie z prędkością bliską natywnej bezpośrednio w przestrzeni jądra.
+
+W ten sposób eBPF uzyskuje uprawnienia jądra nie poprzez omijanie warstw bezpieczeństwa, ale poprzez matematyczne udowodnienie jądru, że jego wykonanie jest bezpieczne. Nie może on uzyskać dostępu do dowolnej pamięci jądra; jest ściśle ograniczony do struktur danych specyficznych dla kontekstu (takich jak struktura \texttt{xdp\_md} dla danych pakietów) oraz predefiniowanych funkcji pomocniczych jądra (\texttt{bpf\_helpers}), które zapewniają bezpieczne API do interakcji z szerszym systemem.
+
+\subsection{Kluczowe zalety eBPF w porównaniu do modułów LKM}
+
+\begin{itemize}
+    \item \textbf{Bezpieczeństwo i stabilność:} Rygorystyczny proces weryfikacji gwarantuje, że program eBPF nie doprowadzi do awarii systemu. Jeśli kod narusza granice pamięci lub jego wykonanie trwa zbyt długo, weryfikator po prostu odrzuca go w momencie ładowania.
+    \item \textbf{Dynamiczne ładowanie i aktualizacje:} Programy eBPF mogą być ładowane, aktualizowane i odinstalowywane w locie, bez restartowania systemu czy przerywania pracy sieci. Umożliwia to dynamiczne i płynne aktualizacje reguł filtrowania pakietów.
+    \item \textbf{Wysoka wydajność:} Dzięki kompilacji JIT programy eBPF działają z prędkościami natywnymi. W kontekście XDP pozwala to na przetwarzanie pakietów bezpośrednio w sterowniku karty sieciowej (NIC), zanim jądro w ogóle przydzieli pamięć (\texttt{sk\_buff}), co zapewnia opóźnienie poniżej mikrosekundy.
+    \item \textbf{Bezpieczeństwo i izolacja:} Ponieważ eBPF jest ograniczony do określonych punktów podpięcia (hooks) i funkcji pomocniczych, drastycznie zmniejsza obszar podatności na ataki w porównaniu z modułami LKM, które mają absolutną kontrolę nad systemem.
+\end{itemize}
+
+\section{Architektura systemu i paradygmat}
+
+System jest ściśle zaprojektowany wokół paradygmatu separacji warstwy sterowania (control plane) od warstwy danych (data plane). \textbf{Warstwa danych (Data Plane)} jest napisana w ograniczonym języku C, skompilowana za pomocą Clang/LLVM do kodu bajtowego eBPF i wykonywana bezpiecznie w kontekście jądra. \textbf{Warstwa sterowania (Control Plane)} wykorzystuje język Python 3 do orkiestracji cyklu życia programu eBPF, używając narzędzi \texttt{iproute2} oraz \texttt{bpftool} do zarządzania asynchronicznymi aktualizacjami stanu.
+
+\subsection{Schemat komponentów architektury}
+
+\begin{minipage}{\linewidth}
+\begin{center}
+\begin{tikzpicture}[
+    node distance=3cm,
+    block/.style={rectangle, draw, fill=blue!10, text width=8em, text centered, rounded corners, minimum height=3.5em, drop shadow, font=\small},
+    map/.style={cylinder, draw, fill=yellow!10, text width=6em, text centered, shape border rotate=90, minimum height=4.5em, drop shadow, font=\small},
+    cloud/.style={draw, ellipse, fill=green!10, text width=6em, text centered, minimum height=3em, drop shadow, font=\small},
+    arrow/.style={thick,->,>=stealth}
+]
+
+% User Space Components - Explicit coordinates for perfect horizontal centering
+\node [block] (loader) at (-3.2, 0) {\textbf{Loader BPF} \\ (Libbpf / Python)};
+\node [block] (cli) at (-3.2, 2.2) {\textbf{Interfejs CLI zarządzania} \\ (guard.py / guard.sh)};
+\node [map] (maps) at (3.2, 0) {\textbf{Mapy BPF} \\ action\_map \\ dev\_map};
+
+\node[draw, dashed, inner sep=0.8cm, label={[font=\bfseries]above:Przestrzeń użytkownika}] (userspace) [fit=(cli) (loader) (maps)] {};
+
+% Kernel Space Components - Explicit coordinates for perfect horizontal centering
+\node [block] (filter) at (0, -4.5) {\textbf{Program XDP} \\ (filter.c)};
+\node [block] (nic) at (-5.2, -4.5) {\textbf{Sprzęt karty NIC} \\ (kolejka RX)};
+
+\node [cloud] (discard) at (-4.2, -6.5) {XDP\_DROP};
+\node [cloud] (stack) at (0, -7.5) {XDP\_PASS};
+\node [cloud] (bounce) at (4.2, -6.5) {XDP\_TX};
+\node [cloud] (redirect) at (5.2, -4.5) {XDP\_REDIRECT};
+
+\node[draw, dashed, inner sep=1cm, label={[font=\bfseries]below:Przestrzeń jądra}] (kernel) [fit=(filter) (nic) (discard) (stack) (bounce) (redirect)] {};
+
+% Explicit Logical Connections
+\draw [arrow] (cli) -- node[right] {RPC/Podproces} (loader);
+\draw [arrow] (loader) -- node[above] {bpf\_map\_update} (maps);
+\draw [arrow] (maps.south) -- ++(0,-1.5) -| node[near start, above] {bpf\_map\_lookup} (filter.north);
+\draw [arrow] (nic) -- node[above] {Transfer DMA} (filter);
+
+\draw [arrow] (filter) -- (discard);
+\draw [arrow] (filter) -- (stack);
+\draw [arrow] (filter) -- (bounce);
+\draw [arrow] (filter) -- (redirect);
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+\section{Implementacja warstwy danych (eBPF/XDP)}
+
+Kod warstwy danych (\texttt{src/data\_plane/filter.c}) podczepia się pod pętlę odpytywania NAPI karty sieciowej (NIC) poprzez makro \texttt{SEC("xdp")}. Funkcja \texttt{xdp\_drop\_logic} pełni rolę głównego koordynatora pakietów wejściowych (ingress).
+
+\subsection{Układ pamięci i walidacja wskaźników}
+
+Programy eBPF działają w zweryfikowanym środowisku. Zanim weryfikator zezwoli na dostęp do pamięci pakietu, kod must udowodnić, że dostęp w granicach pamięci jest bezpieczny. Program otrzymuje kontekst \texttt{struct xdp\_md}, dostarczający wskaźniki mapowane przez DMA:
+
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=C]
+void *data = (void *)(long)ctx->data;
+void *data_end = (void *)(long)ctx->data_end;
+\end{lstlisting}
+\end{minipage}
+
+Używamy niestandardowego makra \texttt{BOUNDS\_CHECK} zdefiniowanego w pliku \texttt{headers.h}:
+
+\newpage
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=C]
+#define BOUNDS_CHECK(pointer, type, data_end) \
+    do { \
+        if ((void *)(pointer) + sizeof(type) > (void *)(data_end)) \
+            return XDP_PASS; \
+    } while(0)
+\end{lstlisting}
+\end{minipage}
+
+Potok analizy (parsing pipeline) przebiega ściśle warstwa po warstwie:
+\begin{enumerate}
+    \item \textbf{Warstwa 2 (Ethernet)}: Rzutowanie \texttt{data} na strukturę \texttt{struct ethhdr}. Weryfikacja granic pamięci. Sprawdzenie, czy \texttt{eth->h\_proto == bpf\_htons(ETH\_P\_IP)}. Jeśli nie, przekazanie pakietu do jądra poprzez \texttt{XDP\_PASS}.
+    \item \textbf{Warstwa 3 (IPv4)}: Rzutowanie \texttt{data + sizeof(struct ethhdr)} na strukturę \texttt{struct iphdr}. Weryfikacja granic pamięci. Wyodrębnienie docelowego adresu IP (\texttt{ip->daddr}).
+\end{enumerate}
+
+\subsection{Schemat mapy akcji (Action Map Schema)}
+
+Wyodrębniony adres IP jest używany jako klucz wyszukiwania w głównej mapie haszującej BPF, \texttt{action\_map}. Mapa oczekuje adresu IPv4 w sieciowej kolejności bajtów (\texttt{\_\_u32}) i zwraca strukturę \texttt{struct action\_cfg}:
+
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=C]
+struct action_cfg {
+    __u32 target;           // 0: PASS, 1: DROP, 2: TX, 3: REDIRECT, 4: NAT
+    __u32 new_ip;           // Docelowy adres IP dla scenariuszy NAT
+    __u32 ifindex;          // Indeks interfejsu systemu operacyjnego dla REDIRECT
+    __u64 dropped_packets;  // Atomowy licznik wydajnosci
+};
+\end{lstlisting}
+\end{minipage}
+
+\subsection{Niskopoziomowa semantyka akcji}
+
+W zależności od pobranej wartości \texttt{target}, jądro wykonuje jedną z następujących procedur:
+
+\subsubsection{XDP\_DROP}
+Najprostsza i najszybsza akcja. Sterownik karty sieciowej (NIC) odrzuca ramkę i natychmiast odzyskuje bufor DMA. Kod atomowo inkrementuje globalną mapę tablicy \texttt{total\_dropped} oraz specyficzną dla reguły mapę \texttt{dropped\_packets}.
+
+\subsubsection{XDP\_TX}
+\texttt{XDP\_TX} odsyła pakiet z powrotem przez ten sam interfejs, przez który dotarł. W naszej implementacji jest to wykorzystywane do zaawansowanej manipulacji ICMP. W przypadku wykrycia pakietu \texttt{ICMP\_ECHO} (Ping):
+\begin{enumerate}
+    \item Typ jest nadpisywany jako \texttt{ICMP\_ECHOREPLY} (0).
+    \item \textbf{Obliczenia sumy kontrolnej}: Ponieważ Typ 8 zmienił się na Typ 0, 16-bitowa suma kontrolna dopełnienia do jedynki musi być przyrostowo zaktualizowana przez dodanie wartości \texttt{0x0800}.
+    \item Adresy MAC i IP są zamieniane miejscami przy użyciu \texttt{\_\_builtin\_memcpy} w celu uzyskania optymalnej kompilacji wbudowanej (inline).
+\end{enumerate}
+
+\subsubsection{XDP\_REDIRECT \& ACTION\_NAT (DNAT)}
+\texttt{ACTION\_NAT} przeprowadza translację docelowego adresu sieciowego (Destination Network Address Translation – DNAT) bezpośrednio na poziomie sprzętowym. 
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=C]
+__u32 old_daddr = ip->daddr;
+__u32 new_daddr = cfg->new_ip;
+__u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
+csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
+csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
+while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+ip->check = bpf_htons(~csum & 0xFFFF);
+\end{lstlisting}
+\end{minipage}
+Ta logika bitowa przyrostowo aktualizuje sumę kontrolną nagłówka IP bez potrzeby pełnego przeliczania pakietu, zapewniając opóźnienia poniżej mikrosekundy. \texttt{XDP\_REDIRECT} działa według dokładnie tej samej logiki, kończąc się jednak przekazaniem ramki do interfejsu wskazanego w \texttt{dev\_map}.
+
+\section{Warstwa sterowania: orkiestracja i odpytywanie}
+
+Warstwa sterowania (Control Plane) składa się z dwóch głównych skryptów Pythona: \texttt{loader.py} do zarządzania cyklem życia oraz \texttt{guard.py} do definiowania reguł za pomocą interfejsu wiersza poleceń (CLI).
+
+\subsection{Silnik ładujący (\texttt{loader.py})}
+
+Loader obsługuje kompilację typu Ahead-Of-Time (AOT) oraz podłączanie do jądra za pomocą zestawu narzędzi \texttt{iproute2}.
+
+\begin{itemize}
+    \item \textbf{Kompilacja}: Uruchamia \texttt{make} w celu skompilowania pliku \texttt{filter.c} do obiektu ELF \texttt{filter.o}.
+    \item \textbf{Wybór trybu}: Wykrywa, czy podmontować program w wysokowydajnym trybie natywnym (\texttt{xdpdrv}), czy w ogólnym trybie programowym (\texttt{xdpgeneric}).
+    \item \textbf{Podłączanie}: Używa polecenia \texttt{ip -force link set dev <interface> xdpdrv obj filter.o sec xdp}. Flaga \texttt{-force} gwarantuje atomowe nadpisanie nieaktywnych ("zombie") programów.
+    \item \textbf{Asynchroniczne odpytywanie}: Działa w nieskończonej pętli (\texttt{time.sleep(1)}), która wywołuje \texttt{bpftool -j map dump name action\_map}. Dekoduje dane wyjściowe JSON, rozpakowuje strumienie bajtów i tłumaczy surowe metryki na czytelne dla człowieka logi.
+\end{itemize}
+
+\subsection{Interfejs CLI zarządzania (\texttt{guard.py} \& \texttt{guard.sh})}
+
+Projekt udostępnia dwa identyczne interfejsy przypominające \texttt{iptables} do manipulowania aktywnymi mapami BPF za pomocą narzędzia \texttt{bpftool}:
+\begin{itemize}
+    \item \textbf{\texttt{src/control\_plane/guard.py}}: Główna implementacja w języku Python z użyciem biblioteki \texttt{argparse}.
+    \item \textbf{\texttt{scripts/guard.sh}}: Alternatywa w czystym Bashu wykorzystująca \texttt{awk} i \texttt{sed} dla środowisk, w których Python jest niedostępny lub niepożądany.
+\end{itemize}
+
+Oba skrypty współdzielą dokładnie tę samą składnię i argumenty.
+
+\textbf{Przykłady składni CLI:}
+
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=bash]
+# Dodaj standardowa regule DROP dla zlosliwego hosta (wersja Python)
+sudo python3 guard.py --append --destination 192.168.1.50 --jump DROP
+
+# Ustanow translacje NAT na poziomie sprzetowym (wersja Bash)
+sudo ./guard.sh -A -d 10.0.0.100 -j NAT --to-destination 10.0.0.250
+
+# Przekieruj ruch przychodzacy dla adresu 10.0.0.5 na inny wirtualny Ethernet
+sudo ./guard.sh -A -d 10.0.0.5 -j REDIRECT --oif veth1
+
+# Wyswietl liste wszystkich aktywnych regul dynamicznie pobranych z pamieci jadra
+sudo python3 guard.py --list
+\end{lstlisting}
+\end{minipage}
+
+Wewnętrznie oba skrypty rozpoznają interfejsy systemowe (np. \texttt{veth1}) do całkowitoliczbowych wartości \texttt{ifindex} za pośrednictwem \texttt{/sys/class/net/<iface>/ifindex} i formatują tablice bajtów struktur C (albo za pomocą \texttt{struct.pack} w Pythonie, albo \texttt{printf} w Bashu), aby wstrzyknąć je do jądra poprzez polecenie \texttt{bpftool map update}.
+
+\section{Prezentacja działania i przykłady testowe}
+
+Aby zademonstrować i zweryfikować możliwości systemu XDP-L2-Guard, katalog \texttt{scripts/example/} udostępnia interaktywne środowisko testowe wykorzystujące sieciowe przestrzenie nazw Linuksa (netns).
+
+\subsection{Konfiguracja topologii sieciowej}
+Skrypt \texttt{setup.sh} inicjalizuje symulowane 3-węzłowe środowisko sieciowe:
+\begin{itemize}
+    \item \textbf{\texttt{ns1} (Filtr/Router)}: Przypisany adres IP \texttt{10.0.0.1}. Obiekt eBPF jest podłączony do wirtualnych interfejsów \texttt{v1-2} i \texttt{v1-3}. Włączone jest przekazywanie pakietów IPv4 (forwarding).
+    \item \textbf{\texttt{ns2} (Nadawca)}: Przypisany adres IP \texttt{10.0.0.2}. Działa jako źródło ruchu.
+    \item \textbf{\texttt{ns3} (Cel)}: Przypisany adres IP \texttt{10.0.0.3} w trybie nasłuchiwania (promiscuous mode) w celu obserwowania przekierowanych pakietów.
+\end{itemize}
+
+\subsection{Stosowanie akcji}
+Skrypt \texttt{set\_action.sh} używa skryptu \texttt{guard.sh} do dynamicznego nakładania reguł na ruch pochodzący z węzła \texttt{ns2}:
+
+\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=bash]
+# Terminal 1: Uruchom konfiguracje i utrzymaj aktywny filtr XDP
+sudo ./setup.sh
+
+# Terminal 2: Testuj rozne akcje XDP w czasie rzeczywistym
+./set_action.sh drop      # Ruch z ns2 jest po cichu odrzucany
+./set_action.sh redirect  # Ruch z ns2 jest przekierowywany do ns3
+./set_action.sh tx        # Hairpin ICMP echo (Ping odpowiada natychmiast)
+./set_action.sh nat       # Docelowy IP jest przepisywany na 10.0.0.3
+\end{lstlisting}
+\end{minipage}
+
+Ta konfiguracja udowadnia, że złożone operacje warstwy 2 (REDIRECT) oraz warstwy 3 (NAT) zachodzą w całości w warstwie eBPF, całkowicie omijając konwencjonalną logikę routingu w \texttt{ns1}.
+
+\section{Operacyjny DevOps i diagnostyka}
+
+\subsection{Strojenie wydajności i rzeczywiste limity}
+Aby osiągnąć teoretyczną maksymalną przepustowość (10-40 Gbps), konieczne jest przeprowadzenie kilku optymalizacji na poziomie sprzętowym.
+
+\begin{itemize}
+    \item \textbf{Tryb natywny (\texttt{xdpdrv}) a tryb ogólny (\texttt{xdpgeneric})}: Tryb natywny uruchamia program eBPF bezpośrednio w sterowniku karty sieciowej (NIC), zanim jądro przydzieli jakąkolwiek pamięć. Tryb ogólny działa na dalszym etapie stosu. Tryb natywny jest kluczowy dla ochrony przed zalewem pakietów (flood protection).
+    \item \textbf{Wyłączenie sprzętowych odciążeń (Offloads)}: Odciążenia takie jak Generic Receive Offload (GRO) agregują pakiety zanim zostaną one zauważone przez XDP, co powoduje ominięcie filtra. Wyłączenie następuje poprzez: \texttt{sudo ethtool -K eth0 gro off gso off rxvlan off}.
+    \item \textbf{Przypinanie rdzeni CPU (CPU Pinning)}: Należy upewnić się, że przerwania IRQ dla XDP są przypięte do dedykowanych fizycznych rdzeni procesora za pomocą \texttt{smp\_affinity}.
+\end{itemize}
+
+\subsubsection{Studium przypadku: Testowanie trybu natywnego kart sieciowych Intel}
+Podczas rzeczywistych testów obciążeniowych wykorzystujących wiele niezależnych maszyn atakujących, które zalewały pakietami interfejs sieciowy Intel, naszym celem było wykorzystanie natywnego trybu XDP (\texttt{xdpdrv}) dla uzyskania maksymalnego przyspieszenia sprzętowego. Ostatecznie napotkaliśmy wyzwania związane z niskopoziomową konfiguracją sprzętową, a nie limity obliczeniowe procesora hosta.
+
+Choć w tym konkretnym teście nie byliśmy w stanie idealnie dopasować konfiguracji sterownika karty sieciowej w celu osiągnięcia przetwarzania z prędkością łącza (wire-speed), uznajemy to za kluczowy obszar przyszłego rozwoju. Jesteśmy w pełni świadomi ogromnego potencjału wydajnościowego, jaki oferuje natywne wykonywanie na poziomie sprzętowym. Byliśmy wyjątkowo blisko działającej natywnej implementacji, a rozwiązanie tych specyficznych dla sprzętu niuansów konfiguracyjnych pozostaje priorytetowym kamieniem milowym dla kolejnej ewolucji XDP-L2-Guard.
+
+\needspace{10\baselineskip}
+\subsection{Matryca diagnostyczna}
+
+\begin{minipage}{\linewidth}
+\begin{center}
+\renewcommand{\arraystretch}{1.5} % Zwiekszone dopasowanie dla czytelnosci
+\begin{tabular}{|p{0.25\textwidth}|p{0.35\textwidth}|p{0.32\textwidth}|}
+\hline
+\textbf{Objaw} & \textbf{Analiza przyczyny źródłowej} & \textbf{Rozwiązanie} \\ \hline
+\texttt{libbpf: load fail} & Weryfikator eBPF odrzucił granice kodu. & Sprawdź \texttt{dmesg}. Upewnij się, że \texttt{BOUNDS\_CHECK} obejmuje całą odczytywaną pamięć. \\ \hline
+Reguły nałożone, brak odrzucania & Podłączono do niewłaściwego interfejsu lub trybu. & Sprawdź za pomocą \texttt{ip link show}. Upewnij się, że XDP jest podłączony do interfejsu fizycznego, a nie do mostka (bridge). \\ \hline
+\texttt{EBUSY} podczas podłączania & Inny program XDP jest już załadowany. & Użyj flagi \texttt{-force} w poleceniu \texttt{ip link set dev <iface> xdp obj ...} \\ \hline
+Wysokie zużycie CPU przez SoftIRQ & Blokowanie zasobów (lock contention) na mapie \texttt{total\_dropped}. & Zrefaktoryzuj mapę do \texttt{BPF\_MAP\_TYPE\_PERCPU\_ARRAY}. \\ \hline
+Pakiety omijają filtr & Aktywne jest sprzętowe odciążenie (offloading). & Wyłącz GRO/LRO za pomocą \texttt{ethtool -K <iface> gro off}. \\ \hline
+Błąd tworzenia mapy BPF & Limit \texttt{RLIMIT\_MEMLOCK} jest zbyt niski. & Zwiększ limity pamięci: \texttt{ulimit -l unlimited}. \\ \hline
+Ciche niepowodzenie \texttt{XDP\_TX} & Niepoprawne ponowne obliczenie sumy kontrolnej. & Zweryfikuj matematykę dopełnienia do jedynki. Upewnij się, że logika zamiany adresów MAC jest poprawna. \\ \hline
+\end{tabular}
+\end{center}
+\end{minipage}
+
+\section{Badanie potencjału technologii Carrier Ethernet za pomocą XDP}
+
+Choć standardowa dystrybucja Linuksa nie jest zazwyczaj stosowana jako rdzeniowy router Carrier Ethernet, nowoczesne możliwości jądra dostarczają elementów konstrukcyjnych do testowania tych koncepcji. Carrier Ethernet opiera się na dostarczaniu pakietów o wysokiej przepustowości oraz wewnętrznych mechanizmach etykietowania (takich jak MPLS czy VLAN) w celu efektywnego kierowania ruchem. Nasz projekt, XDP-L2-Guard, służy jako małe środowisko testowe do zrozumienia potencjału eBPF i XDP w tego typu scenariuszach.
+
+\subsection{Testowanie wewnętrznych możliwości routingu}
+
+Historycznie routing oparty na etykietach MPLS w systemie Linux opiera się na standardowym stosie sieciowym jądra (poprzez moduły takie jak \texttt{mpls\_router}), co wprowadza narzut na procesor. Nasza implementacja w pliku \texttt{filter.c} skupia się obecnie na podstawowym wyszukiwaniu adresów docelowych IPv4, ale skutecznie demonstruje podstawową zasadę wymaganą dla routera LSR (Label Switch Router).
+
+Działając w punkcie podczepienia \texttt{XDP}, przechwytujemy pakiety przed alokacją \texttt{sk\_buff} przez jądro. Przetestowana przez nas funkcjonalność \texttt{XDP\_REDIRECT} pokazuje, że stworzenie płaszczyzny danych szybkiej ścieżki (fast-path data plane) jest całkowicie możliwe. Choć nie zaimplementowaliśmy pełnego parsowania MPLS, nasz kod udowadnia potencjał: logika eBPF mogłaby łatwo zostać rozszerzona o odczytywanie etykiet MPLS bezpośrednio ze wskaźników \texttt{data} i natychmiastowe kierowanie pakietów za pomocą mapy \texttt{dev\_map}.
+
+\subsection{Sprzętowe odciążenie i karty sieciowe Intel}
+
+Przetestowaliśmy XDP-L2-Guard w celu zrozumienia natywnego trybu XDP (\texttt{xdpdrv}) na nowoczesnych kartach sieciowych Intel (takich jak serie 700 oraz 800 ice). Teoretycznie, wykonywanie kodu bajtowego eBPF bezpośrednio w sterowniku kolejki odbiorczej (RX queue) karty sieciowej oferuje wydajność porównywalną z DPDK (Data Plane Development Kit – standardowy w branży szkielet programistyczny osiągający wysokie prędkości poprzez całkowite ominięcie jądra systemu operacyjnego na rzecz przetwarzania pakietów w przestrzeni użytkownika), bez konieczności opuszczania środowiska jądra Linuksa.
+
+Mimo że nasz projekt jest jedynie dowodem koncepcji (proof-of-concept), podkreśla on, jak akceleracja sprzętowa (jak Intel Flow Director) połączona z XDP może inteligentnie dystrybuować i przetwarzać ruch przy ekstremalnie niskich opóźnieniach. Nasze eksperymenty potwierdzają teoretyczny potencjał użycia systemu Linux i sprzętu Intel do przetwarzania ruchu klasy operatorskiej (Carrier-grade).
+
+\section{Testowanie koncepcji przełącznika programowego}
+
+Jednym z głównych celów projektu XDP-L2-Guard było zbadanie, w jaki sposób eBPF może służyć jako podstawa dla programowalnego przełącznika programowego (software switch) i jak wypada w porównaniu z tradycyjnymi narzędziami zaporowymi (firewall).
+
+\subsection{eBPF jako alternatywa dla iptables}
+
+Tradycyjnie filtrowanie pakietów i NAT w systemie Linux opierają się na narzędziu \texttt{iptables}. Jednak \texttt{iptables} wykorzystuje model listy sekwencyjnej (złożoność $O(n)$), co oznacza, że wydajność spada wraz ze wzrostem liczby reguł. Nasz projekt pozwolił nam praktycznie przetestować korzyści wydajnościowe wynikające z map eBPF.
+
+Dzięki zaimplementowaniu mapy \texttt{action\_map} (\texttt{BPF\_MAP\_TYPE\_HASH}), nasz skrypt XDP osiąga stały czas wyszukiwania $O(1)$. Chociaż nasza warstwa sterowania w Pythonie (\texttt{guard.py}) zarządza jedynie ułamkiem reguł, jakie mogłoby stosować rzeczywiste przedsiębiorstwo, zademonstrowany przez nas podstawowy mechanizm skaluje się bez wysiłku, udowadniając wyższość eBPF nad przestarzałym \texttt{iptables}.
+
+\subsection{Podstawowy NAT i potencjał warstwy danych}
+
+Zamiast polegać na stosie netfilter jądra, zaimplementowaliśmy podstawową akcję \texttt{ACTION\_NAT} w języku C, aby przetestować bezpośrednią manipulację pakietami. Nasz kod pomyślnie odczytuje docelowe adresy IP, nadpisuje je i ponownie oblicza sumę kontrolną dopełnienia do jedynki przy użyciu operacji bitowych bezpośrednio w pliku \texttt{filter.c}.
+
+\begin{minipage}{\linewidth}
+W połączeniu z \texttt{XDP\_REDIRECT} tworzy to podstawowy, ale bardzo szybki przełącznik programowy. Choć XDP-L2-Guard nie jest kompletnym, gotowym do wdrożenia produkcyjnego routerem, z powodzeniem demonstruje niewielką część możliwości eBPF, potwierdzając, że architektura Linuksa ma potencjał do obsługi złożonego, szybkiego routingu i etykietowania na najniższym możliwym poziomie oprogramowania.
+\end{minipage}
+
+\newpage
+\section{Podsumowanie projektu i wnioski}
+
+\subsection{Wrażenia i wyciągnięte wnioski}
+
+Realizacja projektu XDP-L2-Guard dostarczyła bezcennej, praktycznej wiedzy dotyczącej najniższych poziomów stosu sieciowego systemu Linux. Naszym głównym wrażeniem jest ogromna elastyczność i możliwości połączone z trudną ścieżką nauki. eBPF i XDP oferują bezprecedensową moc przechwytywania i modyfikowania pakietów z prędkością łącza, ale ta moc wiąże się z ograniczeniami narzuconymi przez rygorystyczny weryfikator oraz skomplikowaną obsługą pamięci na poziomie języka C. Pomyślnie udowodniliśmy, że jesteśmy w stanie napisać funkcjonalną warstwę danych zdolną do parsowania nagłówków IP, przeliczania sum kontrolnych oraz orkiestracji podstawowych operacji NAT lub przekierowań – a wszystko to zanim jądro przydzieli jakiekolwiek standardowe bufory gniazd.
+
+\subsection{Dlaczego ten projekt był warty realizacji}
+
+Ten projekt był niezwykle wartościowy, ponieważ odmitologizował mechanizmy stojące za nowoczesnymi sieciami chmurowymi (cloud-native networking) oraz sieciami definiowanymi programowo (SDN). Budując XDP-L2-Guard od zera, zmieniliśmy nasze postrzeganie systemu Linux z prostego punktu końcowego lub podstawowej zapory sieciowej w wysoce programowalny, zbliżony do sprzętowego przełącznik. Pozwoliło nam to w praktyce doświadczyć ograniczeń starszych narzędzi, takich jak \texttt{iptables}, i w pełni zrozumieć, dlaczego branża tak szybko przechodzi na eBPF. Wiedza zdobyta w zakresie natywnego XDP, sprawdzania granic pamięci oraz rozdzielenia warstwy sterowania od warstwy danych stanowi kluczowy fundament współczesnej inżynierii sieciowej.
+
+\subsection{Kierunki przyszłych badań i testów}
+
+Choć XDP-L2-Guard służy jako udany dowód koncepcji (proof-of-concept), istnieje wiele dróg potencjalnej przyszłej eksploracji:
+\begin{itemize}
+    \item \textbf{Głębokie parsowanie warstwy 2/etykiet:} Rozszerzenie kodu \texttt{filter.c} w celu natywnego parsowania, dodawania (push) i zdejmowania (pop) etykiet MPLS lub tagów VLAN, aby zasymulować kompletny router Carrier Ethernet LSR (Label Switch Router).
+    \item \textbf{Zaawansowane strojenie sprzętowe:} Dalsze rozwiązywanie niskopoziomowych niuansów konfiguracji sprzętowej kart sieciowych Intel, aby w pełni odblokować tryb natywny (\texttt{xdpdrv}) i porównać go z rozwiązaniami opartymi na DPDK przy przepustowościach rzędu 40+ Gbps.
+    \item \textbf{Śledzenie stanu (Stateful Tracking):} Przejście od bezstanowego DNAT do w pełni stanowych połączeń poprzez zaimplementowanie mechanizmu śledzenia połączeń (conntrack) z wykorzystaniem map haszujących eBPF LRU (Least Recently Used).
+    \item \textbf{Wsparcie dla IPv6:} Rozszerzenie bazy kodu C oraz logiki sprawdzania granic pamięci w celu kompleksowej obsługi nagłówków IPv6 oraz protokołów routingu ICMPv6.
+\end{itemize}
+
+\end{document}
