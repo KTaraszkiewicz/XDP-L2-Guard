@@ -14,9 +14,18 @@
 \usepackage{needspace}
 \usepackage{float}
 \usepackage[section]{placeins}
+\usepackage{fancyhdr} 
+
 \usetikzlibrary{shapes.geometric, arrows, positioning, shadows, fit, calc}
 
 \geometry{margin=1in}
+
+% Konfiguracja stopek
+\pagestyle{fancy}
+\fancyhf{} 
+\renewcommand{\headrulewidth}{0pt} 
+\cfoot{\thepage} 
+\lfoot{Theoretical Foundations \& Architecture} 
 
 % Style adjustments for continuous flow
 \usepackage{titlesec}
@@ -29,6 +38,7 @@
 \definecolor{codebg}{RGB}{245, 245, 245}
 \definecolor{cmdcolor}{RGB}{0, 128, 0}
 \definecolor{warning}{RGB}{200, 0, 0}
+\definecolor{docblue}{RGB}{15, 60, 120} 
 
 \hypersetup{
     colorlinks=true,
@@ -40,7 +50,7 @@
 }
 
 \lstset{
-    backgroundcolor=\color{codebg} ,
+    backgroundcolor=\color{codebg},
     basicstyle=\ttfamily\small,
     breaklines=true,
     frame=single,
@@ -50,6 +60,8 @@
     stringstyle=\color{cmdcolor},
     captionpos=b,
     keepspaces=true,
+    showspaces=false,        
+    showstringspaces=false   
 }
 
 \title{\textbf{XDP-L2-Guard: Technical Reference Manual \\ \large High-Performance Layer-2 \& Layer-3 Traffic Orchestration with eBPF/XDP}}
@@ -57,11 +69,15 @@
 \date{\today}
 
 \begin{document}
+\color{docblue} 
 
 \maketitle
 
 \begin{abstract}
-XDP-L2-Guard is a high-performance, programmable network orchestration filter leveraging the Linux eXpress Data Path (XDP). Operating directly inside the Network Interface Card (NIC) driver hook, it provides sub-microsecond packet processing capabilities for Layer-2 and Layer-3 traffic. This enables wire-speed dropping, packet redirection, hairpinning, and state-aware Network Address Translation (NAT) before the Linux kernel allocates socket buffers (\texttt{sk\_buff}). This manual serves as an exhaustive, low-level technical reference covering C-level memory structures, Python CO-RE management, checksum algorithms, and deployment strategies.
+XDP-L2-Guard is a high-performance, programmable network orchestration filter leveraging the Linux eXpress Data Path (XDP).
+Operating directly inside the Network Interface Card (NIC) driver hook, it provides sub-microsecond packet processing capabilities for Layer-2 and Layer-3 traffic.
+This enables wire-speed dropping, packet redirection, hairpinning, and state-aware Network Address Translation (NAT) before the Linux kernel allocates socket buffers (\texttt{sk\_buff}).
+This manual serves as an exhaustive, low-level technical reference covering theoretical foundations, system architecture, operational DevOps, and an isolated comprehensive technical chapter detailing concrete codebase implementations, memory structures, Python CO-RE orchestration, and empirical screenshot showcases.
 \end{abstract}
 
 \tableofcontents
@@ -69,15 +85,19 @@ XDP-L2-Guard is a high-performance, programmable network orchestration filter le
 
 \section{eBPF vs. Traditional Linux Kernel Modules}
 
-Historically, modifying or extending the behavior of the Linux kernel required writing a Linux Kernel Module (LKM) or recompiling the kernel source code. While LKMs have full privileges and unrestricted access to kernel memory and execution flows, they inherently introduce significant risks. A bug in an LKM, such as a null pointer dereference or an infinite loop, can instantly lead to a kernel panic, crashing the entire operating system. Furthermore, LKMs pose security risks as they run with unrestricted Ring 0 privileges without built-in isolation.
-
-eBPF (Extended Berkeley Packet Filter) introduces a fundamentally different operational paradigm. It allows developers to safely execute custom bytecode within the kernel without changing kernel source code or loading standard modules. 
+Historically, modifying or extending the behavior of the Linux kernel required writing a Linux Kernel Module (LKM) or recompiling the kernel source code.
+While LKMs have full privileges and unrestricted access to kernel memory and execution flows, they inherently introduce significant risks.
+A bug in an LKM, such as a null pointer dereference or an infinite loop, can instantly lead to a kernel panic, crashing the entire operating system.
+Furthermore, LKMs pose security risks as they run with unrestricted Ring 0 privileges without built-in isolation.
+eBPF (Extended Berkeley Packet Filter) introduces a fundamentally different operational paradigm.
+It allows developers to safely execute custom bytecode within the kernel without changing kernel source code or loading standard modules.
 
 \subsection{Method of Operation and Privilege Acquisition}
 
-Unlike a traditional kernel module that is linked directly against kernel symbols and executed natively as kernel code, eBPF programs are injected into the kernel via the \texttt{bpf()} system call from user-space. However, before any eBPF program is allowed to execute, it must pass through a strict \textbf{Kernel Verifier}. 
-
-The Verifier performs static analysis on the eBPF bytecode to guarantee that the program is safe to run. It ensures that:
+Unlike a traditional kernel module that is linked directly against kernel symbols and executed natively as kernel code, eBPF programs are injected into the kernel via the \texttt{bpf()} system call from user-space.
+However, before any eBPF program is allowed to execute, it must pass through a strict \textbf{Kernel Verifier}.
+The Verifier performs static analysis on the eBPF bytecode to guarantee that the program is safe to run.
+It ensures that:
 \begin{itemize}
     \item There are no infinite loops (all programs must terminate).
     \item All memory accesses are strictly bounds-checked.
@@ -85,42 +105,47 @@ The Verifier performs static analysis on the eBPF bytecode to guarantee that the
     \item The program size does not exceed strict complexity limits.
 \end{itemize}
 
-Once the Verifier approves the bytecode, the eBPF \textbf{JIT (Just-In-Time) Compiler} translates the bytecode into native machine instructions (e.g., x86\_64 or ARM64) specific to the host hardware. This JIT-compiled code then runs at near-native speed directly in kernel space.
-
-Thus, eBPF obtains kernel privileges not by bypassing security layers, but by mathematically proving to the kernel that its execution is safe. It cannot access arbitrary kernel memory; it is strictly limited to context-specific data structures (like the \texttt{xdp\_md} struct for packet data) and predefined kernel helper functions (\texttt{bpf\_helpers}) that provide a safe API to interact with the broader system.
+Once the Verifier approves the bytecode, the eBPF \textbf{JIT (Just-In-Time) Compiler} translates the bytecode into native machine instructions (e.g., x86\_64 or ARM64) specific to the host hardware.
+This JIT-compiled code then runs at near-native speed directly in kernel space.
+Thus, eBPF obtains kernel privileges not by bypassing security layers, but by mathematically proving to the kernel that its execution is safe.
+It cannot access arbitrary kernel memory; it is strictly limited to context-specific data structures (like the \texttt{xdp\_md} struct for packet data) and predefined kernel helper functions (\texttt{bpf\_helpers}) that provide a safe API to interact with the broader system.
 
 \subsection{Key Benefits of eBPF over LKMs}
 
 \begin{itemize}
-    \item \textbf{Safety and Stability:} The rigorous verification process ensures that an eBPF program cannot crash the system. If the code violates memory boundaries or takes too long to execute, the Verifier simply rejects it at load time.
-    \item \textbf{Dynamic Loading and Updates:} eBPF programs can be loaded, updated, and unloaded on the fly without system reboots or network interruptions. This enables dynamic and seamless updates to packet filtering rules.
-    \item \textbf{High Performance:} Thanks to JIT compilation, eBPF programs run at native speeds. In the context of XDP, this allows packet processing to occur directly in the NIC driver before the kernel even allocates memory (\texttt{sk\_buff}), yielding sub-microsecond latency.
+    \item \textbf{Safety and Stability:} The rigorous verification process ensures that an eBPF program cannot crash the system.
+If the code violates memory boundaries or takes too long to execute, the Verifier simply rejects it at load time.
+    \item \textbf{Dynamic Loading and Updates:} eBPF programs can be loaded, updated, and unloaded on the fly without system reboots or network interruptions.
+This enables dynamic and seamless updates to packet filtering rules.
+    \item \textbf{High Performance:} Thanks to JIT compilation, eBPF programs run at native speeds.
+In the context of XDP, this allows packet processing to occur directly in the NIC driver before the kernel even allocates memory (\texttt{sk\_buff}), yielding sub-microsecond latency.
     \item \textbf{Security and Isolation:} Because eBPF is constrained to specific hooks and helpers, it dramatically reduces the attack surface compared to an LKM that has absolute control over the system.
 \end{itemize}
 
 \section{System Architecture and Paradigm}
 
-The system is strictly architected around the paradigm of control/data plane separation. The \textbf{Data Plane} is written in restricted C, compiled via Clang/LLVM into eBPF bytecode, and executes securely within the kernel context. The \textbf{Control Plane} utilizes Python 3 to orchestrate the lifecycle of the eBPF program, utilizing \texttt{iproute2} and \texttt{bpftool} to manage asynchronous state updates.
+The system is strictly architected around the paradigm of control/data plane separation.
+The \textbf{Data Plane} is designed to execute securely within the kernel context at the lowest possible driver level.
+The \textbf{Control Plane} orchestrates the lifecycle of the eBPF program from user-space, utilizing asynchronous state updates to bridge human management commands with kernel-level filtering mechanics.
 
 \subsection{Architectural Component Diagram}
 
 \begin{center}
 \begin{tikzpicture}[
     node distance=3cm,
-    block/.style={rectangle, draw, fill=blue!10, text width=8em, text centered, rounded corners, minimum height=3.5em, drop shadow, font=\small},
-    map/.style={cylinder, draw, fill=yellow!10, text width=6em, text centered, shape border rotate=90, minimum height=4.5em, drop shadow, font=\small},
-    cloud/.style={draw, ellipse, fill=green!10, text width=6em, text centered, minimum height=3em, drop shadow, font=\small},
-    arrow/.style={thick,->,>=stealth}
+    block/.style={rectangle, draw, fill=blue!10, text width=8em, text centered, rounded corners, minimum height=3.5em, drop shadow, font=\small, text=black},
+    map/.style={cylinder, draw, fill=yellow!10, text width=6em, text centered, shape border rotate=90, minimum height=4.5em, drop shadow, font=\small, text=black},
+    cloud/.style={draw, ellipse, fill=green!10, text width=6em, text centered, minimum height=3em, drop shadow, font=\small, text=black},
+    arrow/.style={thick,->,>=stealth, color=primary}
 ]
 
-% User Space Components - Explicit coordinates for perfect horizontal centering
+% User Space Components
 \node [block] (loader) at (-3.2, 0) {\textbf{BPF Loader} \\ (Libbpf / Python)};
 \node [block] (cli) at (-3.2, 2.2) {\textbf{Management CLI} \\ (guard.py / guard.sh)};
 \node [map] (maps) at (3.2, 0) {\textbf{BPF Maps} \\ action\_map \\ dev\_map};
+\node[draw, dashed, color=primary, inner sep=0.8cm, label={[font=\bfseries, color=primary]above:User Space}] (userspace) [fit=(cli) (loader) (maps)] {};
 
-\node[draw, dashed, inner sep=0.8cm, label={[font=\bfseries]above:User Space}] (userspace) [fit=(cli) (loader) (maps)] {};
-
-% Kernel Space Components - Explicit coordinates for perfect horizontal centering
+% Kernel Space Components
 \node [block] (filter) at (0, -4.5) {\textbf{XDP Program} \\ (filter.c)};
 \node [block] (nic) at (-5.2, -4.5) {\textbf{NIC Hardware} \\ (RX Queue)};
 
@@ -129,245 +154,87 @@ The system is strictly architected around the paradigm of control/data plane sep
 \node [cloud] (bounce) at (4.2, -6.5) {XDP\_TX};
 \node [cloud] (redirect) at (5.2, -4.5) {XDP\_REDIRECT};
 
-\node[draw, dashed, inner sep=1cm, label={[font=\bfseries]below:Kernel Space}] (kernel) [fit=(filter) (nic) (discard) (stack) (bounce) (redirect)] {};
+\node[draw, dashed, color=primary, inner sep=1cm, label={[font=\bfseries, color=primary]below:Kernel Space}] (kernel) [fit=(filter) (nic) (discard) (stack) (bounce) (redirect)] {};
 
 % Explicit Logical Connections
-\draw [arrow] (cli) -- node[right] {RPC/Subprocess} (loader);
-\draw [arrow] (loader) -- node[above] {bpf\_map\_update} (maps);
-\draw [arrow] (maps.south) -- ++(0,-1.5) -| node[near start, above] {bpf\_map\_lookup} (filter.north);
-\draw [arrow] (nic) -- node[above] {DMA Transfer} (filter);
+\draw [arrow] (cli) -- node[right, color=docblue] {RPC/Subprocess} (loader);
+\draw [arrow] (loader) -- node[above, color=docblue] {bpf\_map\_update} (maps);
+\draw [arrow] (maps.south) -- ++(0,-1.5) -| node[near start, above, color=docblue] {bpf\_map\_lookup} (filter.north);
+\draw [arrow] (nic) -- node[above, color=docblue] {DMA Transfer} (filter);
 
 \draw [arrow] (filter) -- (discard);
 \draw [arrow] (filter) -- (stack);
 \draw [arrow] (filter) -- (bounce);
 \draw [arrow] (filter) -- (redirect);
-
 \end{tikzpicture}
 \end{center}
 
-\section{Data Plane Implementation (eBPF/XDP)}
+\subsection{Decoupled Plane Dynamic}
 
-The data plane code (\texttt{src/data\_plane/filter.c}) hooks into the NIC's NAPI poll loop via the \texttt{SEC("xdp")} macro. The function \texttt{xdp\_drop\_logic} acts as the primary ingress orchestrator.
+The architectural separation guarantees that the data plane remains highly lightweight and performant.
+By removing complex decision-making loops, string parsing, and state management from the kernel space, the XDP program can focus exclusively on high-speed packet inspection and map lookups.
+User-space components handle the heavy lifting of configuration parsing, object compilation, map population, and telemetry visualization.
 
-\subsection{Memory Layout and Pointer Validation}
-
-eBPF programs operate in a verified environment. Before the verifier allows access to packet memory, the code must prove that the memory bounds are safe. The program receives a \texttt{struct xdp\_md} context, providing DMA mapped pointers:
-
-\begin{lstlisting}[language=C]
-void *data = (void *)(long)ctx->data;
-void *data_end = (void *)(long)ctx->data_end;
-\end{lstlisting}
-
-We utilize a custom \texttt{BOUNDS\_CHECK} macro defined in \texttt{headers.h}:
-\begin{lstlisting}[language=C]
-#define BOUNDS_CHECK(pointer, type, data_end) \
-    do { \
-        if ((void *)(pointer) + sizeof(type) > (void *)(data_end)) \
-            return XDP_PASS; \
-    } while(0)
-\end{lstlisting}
-
-The parsing pipeline proceeds strictly layer by layer:
-\begin{enumerate}
-    \item \textbf{Layer 2 (Ethernet)}: Cast \texttt{data} to \texttt{struct ethhdr}. Verify bounds. Check if \texttt{eth->h\_proto == bpf\_htons(ETH\_P\_IP)}. If not, bypass to kernel via \texttt{XDP\_PASS}.
-    \item \textbf{Layer 3 (IPv4)}: Cast \texttt{data + sizeof(struct ethhdr)} to \texttt{struct iphdr}. Verify bounds. Extract the Destination IP (\texttt{ip->daddr}).
-\end{enumerate}
-
-\subsection{Action Map Schema}
-
-The extracted IP is used as a lookup key in the primary BPF hash map, \texttt{action\_map}. The map expects an IPv4 address in network byte order (\texttt{\_\_u32}) and returns a \texttt{struct action\_cfg}:
-
-\begin{lstlisting}[language=C]
-struct action_cfg {
-    __u32 target;           // 0: PASS, 1: DROP, 2: TX, 3: REDIRECT, 4: NAT
-    __u32 new_ip;           // Destination IP for NAT scenarios
-    __u32 ifindex;          // OS Interface index for REDIRECT
-    __u64 dropped_packets;  // Atomic performance counter
-};
-\end{lstlisting}
-
-\subsection{Low-Level Action Semantics}
-
-Depending on the retrieved \texttt{target}, the kernel executes one of the following routines:
-
-\subsubsection{XDP\_DROP}
-The simplest and fastest action. The NIC driver drops the frame and immediately recycles the DMA buffer. The code atomically increments the global array map \texttt{total\_dropped} and the rule-specific \texttt{dropped\_packets}.
-
-\subsubsection{XDP\_TX}
-\texttt{XDP\_TX} bounces the packet back out of the interface it arrived on. In our implementation, this is used for advanced ICMP manipulation. If an \texttt{ICMP\_ECHO} (Ping) is detected:
-\begin{enumerate}
-    \item The type is rewritten to \texttt{ICMP\_ECHOREPLY} (0).
-    \item \textbf{Checksum Math}: Because Type 8 changed to Type 0, the 16-bit 1's complement checksum must be incrementally updated by adding \texttt{0x0800}.
-    \item MAC and IP addresses are swapped utilizing \texttt{\_\_builtin\_memcpy} for optimal inline compilation.
-\end{enumerate}
-
-\subsubsection{XDP\_REDIRECT \& ACTION\_NAT (DNAT)}
-\texttt{ACTION\_NAT} performs Destination Network Address Translation directly in hardware. 
-\begin{lstlisting}[language=C]
-__u32 old_daddr = ip->daddr;
-__u32 new_daddr = cfg->new_ip;
-__u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
-csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
-csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
-while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
-ip->check = bpf_htons(~csum & 0xFFFF);
-\end{lstlisting}
-This bitwise logic incrementally updates the IP header checksum without requiring a full packet recalculation, ensuring sub-microsecond latency. \texttt{XDP\_REDIRECT} follows the exact same logic but concludes by forwarding the frame to an interface indexed in \texttt{dev\_map}.
-
-\section{Control Plane: Orchestration and Polling}
-
-The Control Plane comprises two primary Python scripts: \texttt{loader.py} for lifecycle management and \texttt{guard.py} for CLI rule definition.
-
-\subsection{The Loader Engine (\texttt{loader.py})}
-
-The loader handles Ahead-Of-Time (AOT) compilation and kernel attachment via the \texttt{iproute2} toolchain.
-
-\begin{itemize}
-    \item \textbf{Compilation}: Triggers \texttt{make} to compile \texttt{filter.c} into the ELF object \texttt{filter.o}.
-    \item \textbf{Mode Selection}: Detects whether to mount in high-performance native mode (\texttt{xdpdrv}) or generic software mode (\texttt{xdpgeneric}).
-    \item \textbf{Attachment}: Uses \texttt{ip -force link set dev <interface> xdpdrv obj filter.o sec xdp}. The \texttt{-force} flag guarantees atomic overwrites of zombie programs.
-    \item \textbf{Asynchronous Polling}: Operates an infinite loop (\texttt{time.sleep(1)}) that invokes \texttt{bpftool -j map dump name action\_map}. It decodes the JSON payload, unpacks the byte streams, and translates the raw metrics into human-readable logs.
-\end{itemize}
-
-\subsection{Management CLI (\texttt{guard.py} \& \texttt{guard.sh})}
-
-The project provides two identical \texttt{iptables}-like interfaces to manipulate the active BPF maps via \texttt{bpftool}:
-\begin{itemize}
-    \item \textbf{\texttt{src/control\_plane/guard.py}}: The primary Python implementation using \texttt{argparse}.
-    \item \textbf{\texttt{scripts/guard.sh}}: A pure Bash alternative utilizing \texttt{awk} and \texttt{sed} for environments where Python is unavailable or undesired.
-\end{itemize}
-
-Both scripts share the exact same syntax and arguments.
-
-\textbf{CLI Syntax Examples:}
-
-\begin{lstlisting}[language=bash]
-# Append a standard DROP rule for a malicious actor (Python version)
-sudo python3 guard.py --append --destination 192.168.1.50 --jump DROP
-
-# Establish a hardware-level NAT translation (Bash version)
-sudo ./guard.sh -A -d 10.0.0.100 -j NAT --to-destination 10.0.0.250
-
-# Redirect traffic arriving for 10.0.0.5 to another Virtual Ethernet
-sudo ./guard.sh -A -d 10.0.0.5 -j REDIRECT --oif veth1
-
-# List all active rules dynamically pulled from kernel memory
-sudo python3 guard.py --list
-\end{lstlisting}
-
-Internally, both scripts resolve system interfaces (e.g., \texttt{veth1}) to integer \texttt{ifindex} values via \texttt{/sys/class/net/<iface>/ifindex} and format the C-struct byte arrays (either via Python's \texttt{struct.pack} or Bash's \texttt{printf}) to be injected into the kernel via \texttt{bpftool map update}.
-
-\section{Action Showcase and Testing Examples}
-
-To demonstrate and validate the capabilities of XDP-L2-Guard, the \texttt{scripts/example/} directory provides an interactive playground utilizing Linux Network Namespaces (netns).
-
-\subsection{Network Topology Setup}
-The \texttt{setup.sh} script initializes a simulated 3-node network environment:
-\begin{itemize}
-    \item \textbf{\texttt{ns1} (Filter/Router)}: Assigned IP \texttt{10.0.0.1}. The eBPF object is attached to virtual interfaces \texttt{v1-2} and \texttt{v1-3}. IPv4 forwarding is enabled.
-    \item \textbf{\texttt{ns2} (Sender)}: Assigned IP \texttt{10.0.0.2}. Acts as the source of traffic.
-    \item \textbf{\texttt{ns3} (Target)}: Assigned IP \texttt{10.0.0.3} in promiscuous mode to observe redirected packets.
-\end{itemize}
-
-\subsection{Applying Actions}
-The \texttt{set\_action.sh} script uses \texttt{guard.sh} to dynamically apply rules for traffic originating from \texttt{ns2}:
-
-\begin{lstlisting}[language=bash]
-# Terminal 1: Run the setup and keep the XDP filter active
-sudo ./setup.sh
-
-# Terminal 2: Test different XDP actions in real-time
-./set_action.sh drop      # Traffic from ns2 is silently dropped
-./set_action.sh redirect  # Traffic from ns2 is bounced to ns3
-./set_action.sh tx        # Hairpin ICMP echo (Ping responds instantly)
-./set_action.sh nat       # Destination IP is rewritten to 10.0.0.3
-\end{lstlisting}
-
-This setup proves that complex Layer-2 (REDIRECT) and Layer-3 (NAT) operations occur entirely within the eBPF layer, completely bypassing the conventional routing logic in \texttt{ns1}.
-
-\subsection{Step-by-Step Execution Walkthrough}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.9\textwidth]{images/screenshot_setup.png}
-    \caption{Terminal output showing the successful creation of virtual Ethernet pairs, namespace setup, and XDP program attachment.}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_baseline.png}
-    \caption{Standard ICMP echo replies passing through the kernel stack.}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.9\textwidth]{images/screenshot_guard_action.png}
-    \caption{Appending a DROP rule to the BPF action map}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_dropped.png}
-    \caption{The impact of the XDP policy: real-time packet loss as the XDP\_DROP action is enforced.}
-\end{figure}
-
-\subsubsection{Phase 5: Transparent Redirection}
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.9\textwidth]{images/screenshot_redirect.png}
-    \caption{XDP\_REDIRECT in action: Traffic intended for 10.0.0.1 is transparently intercepted and routed to the target namespace (ns3) at the driver level.}
-\end{figure}
-
-\FloatBarrier
 \section{Operational DevOps \& Diagnostics}
+
+Deploying eBPF/XDP applications in real-world environments requires a thorough understanding of kernel attachment modes, driver offloads, and hardware interactions.
+This chapter outlines the high-level DevOps considerations and diagnostic frameworks essential for managing XDP-L2-Guard.
 
 \subsection{Performance Tuning \& Real-World Limits}
 To achieve theoretical maximum throughput (10-40 Gbps), several hardware-level optimizations are mandatory.
-
 \begin{itemize}
-    \item \textbf{Native Mode (\texttt{xdpdrv}) vs. Generic Mode (\texttt{xdpgeneric})}: Native mode runs the eBPF program directly inside the NIC driver, before the kernel allocates any memory. Generic mode runs later in the stack. Native mode is essential for flood protection.
-    \item \textbf{Disable Hardware Offloads}: Offloads like Generic Receive Offload (GRO) aggregate packets before XDP sees them, bypassing the filter. Disable via: \texttt{sudo ethtool -K eth0 gro off gso off rxvlan off}.
-    \item \textbf{CPU Pinning}: Ensure XDP IRQs are pinned to dedicated physical cores using \texttt{smp\_affinity}.
+    \item \textbf{Native Mode (\texttt{xdpdrv}) vs. Generic Mode (\texttt{xdpgeneric})}: Native mode runs the eBPF program directly inside the NIC driver, before the kernel allocates any memory.
+Generic mode runs later in the stack, acting as a software fallback. Native mode is essential for volumetric flood protection.
+    \item \textbf{Disable Hardware Offloads}: Offloads like Generic Receive Offload (GRO) and Large Receive Offload (LRO) aggregate packets in hardware before XDP inspects them, potentially bypassing the filter or exceeding eBPF buffer limits.
+These must be suppressed in high-performance deployments.
+    \item \textbf{CPU Pinning}: To prevent cache thrashing and lock contention, XDP interrupt request queues (IRQs) should be pinned to dedicated physical CPU cores using \texttt{smp\_affinity}.
 \end{itemize}
 
-\subsubsection{Case Study: Intel NIC Native Mode Testing}
-During real-world load testing utilizing multiple independent attacking machines flooding an Intel network interface, our goal was to leverage Native XDP mode (\texttt{xdpdrv}) for maximum hardware acceleration. Ultimately, we encountered low-level hardware configuration challenges rather than hitting the computational limits of the host CPU.
-
-While we were unable to perfectly align the NIC driver configuration to achieve wire-speed processing in this specific test, we recognize this as a critical area for future development. We are fully aware of the massive performance potential that native hardware execution offers. We were exceptionally close to a working native implementation, and resolving these hardware-specific configuration nuances remains a high-priority milestone for the next evolution of XDP-L2-Guard.
+\subsection{Case Study: Intel NIC Native Mode Testing}
+During real-world load testing utilizing multiple independent attacking machines flooding an Intel network interface, our goal was to leverage Native XDP mode (\texttt{xdpdrv}) for maximum hardware acceleration.
+Ultimately, we encountered low-level hardware configuration challenges rather than hitting the computational limits of the host CPU.
+While we were unable to perfectly align the NIC driver configuration to achieve wire-speed processing in this specific test, we recognize this as a critical area for future development.
+We are fully aware of the massive performance potential that native hardware execution offers.
+We were exceptionally close to a working native implementation, and resolving these hardware-specific configuration nuances remains a high-priority milestone for the next evolution of XDP-L2-Guard.
 
 \needspace{10\baselineskip}
 \subsection{Diagnostic Matrix}
 
 \begin{center}
-\renewcommand{\arraystretch}{1.5} % Increased padding for readability
+\renewcommand{\arraystretch}{1.5} 
 \begin{tabular}{|p{0.25\textwidth}|p{0.35\textwidth}|p{0.32\textwidth}|}
 \hline
 \textbf{Symptom} & \textbf{Root Cause Analysis} & \textbf{Remediation} \\ \hline
-\texttt{libbpf: load fail} & eBPF Verifier rejected code bounds. & Inspect \texttt{dmesg}. Ensure \texttt{BOUNDS\_CHECK} covers all accessed memory. \\ \hline
-Rules applied, no drop & Attached to wrong interface or mode. & Check with \texttt{ip link show}. Ensure XDP is attached to the physical interface, not a bridge. \\ \hline
-\texttt{EBUSY} during attach & Another XDP program is already loaded. & Use the \texttt{-force} flag in \texttt{ip link set dev <iface> xdp obj ...} \\ \hline
-High SoftIRQ CPU & Lock contention on \texttt{total\_dropped}. & Refactor map to \texttt{BPF\_MAP\_TYPE\_PERCPU\_ARRAY}. \\ \hline
-Packets bypass filter & Hardware offloading is active. & Disable GRO/LRO using \texttt{ethtool -K <iface> gro off}. \\ \hline
-BPF map creation fails & \texttt{RLIMIT\_MEMLOCK} is too low. & Increase memory limits: \texttt{ulimit -l unlimited}. \\ \hline
-\texttt{XDP\_TX} fails silently & Checksum recalculation is incorrect. & Verify 1's complement math. Ensure MAC swapping logic is correct. \\ \hline
+\texttt{libbpf: load fail} & eBPF Verifier rejected code bounds. & Inspect \texttt{dmesg}. Ensure bounds checking covers all accessed memory. \\ \hline
+Rules applied, no drop & Attached to wrong interface or mode. & Check interface state. Ensure XDP is attached to the physical interface, not a bridge. \\ \hline
+\texttt{EBUSY} during attach & Another XDP program is already loaded. & Force atomic replacement during attachment operations. \\ \hline
+High SoftIRQ CPU & Lock contention on global map structures. & Refactor underlying map types to per-CPU arrays. \\ \hline
+Packets bypass filter & Hardware offloading is active. & Disable GRO/LRO using interface management utilities. \\ \hline
+BPF map creation fails & \texttt{RLIMIT\_MEMLOCK} is too low. & Increase system memory lock limits to unlimited. \\ \hline
+Packet bounce fails & Checksum recalculation is incorrect. & Verify 1's complement math and MAC swapping logic. \\ \hline
 \end{tabular}
 \end{center}
 
 \section{Exploring Carrier Ethernet Potential via XDP}
 
-While a standard Linux distribution is not typically used as a core Carrier Ethernet router, modern kernel capabilities provide the building blocks to test these concepts. Carrier Ethernet relies on high-throughput packet delivery and internal labeling mechanisms (like MPLS or VLANs) to route traffic effectively. Our project, XDP-L2-Guard, serves as a small-scale testing ground to understand the potential of eBPF and XDP in these scenarios.
+While a standard Linux distribution is not typically used as a core Carrier Ethernet router, modern kernel capabilities provide the building blocks to test these concepts.
+Carrier Ethernet relies on high-throughput packet delivery and internal labeling mechanisms (like MPLS or VLANs) to route traffic effectively.
+Our project, XDP-L2-Guard, serves as a small-scale testing ground to understand the potential of eBPF and XDP in these scenarios.
 
 \subsection{Testing Internal Routing Capabilities}
 
-Historically, routing based on MPLS labels in Linux relies on the standard kernel network stack (via modules like \texttt{mpls\_router}), which introduces CPU overhead. Our implementation in \texttt{filter.c} currently focuses on basic IPv4 destination lookups, but it effectively demonstrates the underlying principle required for a Label Switch Router (LSR). 
-
-By operating at the \texttt{XDP} hook, we intercept packets before they reach the kernel's \texttt{sk\_buff} allocation. The \texttt{XDP\_REDIRECT} functionality we tested shows that it is entirely possible to construct a fast-path data plane. While we have not implemented full MPLS parsing, our code proves the potential: eBPF logic could easily be extended to read MPLS labels directly from the \texttt{data} pointers and route packets instantly using a \texttt{dev\_map}.
+Historically, routing based on MPLS labels in Linux relies on the standard kernel network stack (via dedicated kernel modules), which introduces CPU overhead.
+While our core architecture focuses on high-speed IP lookups, it effectively demonstrates the underlying principle required for a Label Switch Router (LSR).
+By operating at the XDP driver hook, packets are intercepted before reaching the kernel's memory allocation mechanisms.
+The fast-path redirection capabilities explored in this project show that it is entirely possible to construct an autonomous data plane.
+The architectural concepts proven here could easily be extended to parse MPLS labels directly from raw packet buffers and route frames instantly using dedicated hardware maps.
 
 \subsection{Hardware Offloading and Intel NICs}
 
-We tested XDP-L2-Guard with the goal of understanding Native XDP Mode (\texttt{xdpdrv}) on modern Intel Network Interface Cards (such as the 700 and 800 ice series). In theory, running eBPF bytecode directly inside the NIC's RX queue driver offers performance comparable to DPDK (Data Plane Development Kit, an industry-standard framework that achieves high speeds by completely bypassing the OS kernel to process packets in user space), without leaving the Linux kernel environment.
-
-Although our project is merely a proof-of-concept, it highlights how hardware acceleration (like Intel's Flow Director) combined with XDP can intelligently distribute and process traffic at extremely low latency. Our experiments confirm the theoretical potential of using Linux and Intel hardware to process Carrier-grade traffic.
+We evaluated XDP-L2-Guard with the goal of understanding Native XDP Mode on modern Intel Network Interface Cards (such as the 700 and 800 ice series).
+In theory, running eBPF bytecode directly inside the NIC's RX queue driver offers performance comparable to DPDK (Data Plane Development Kit—an industry-standard framework that achieves high speeds by completely bypassing the OS kernel to process packets in user space), without leaving the Linux kernel environment or dedicating entire CPU cores to polling.
+Although our project serves as a proof-of-concept, it highlights how hardware acceleration combined with XDP can intelligently distribute and process traffic at extremely low latency.
+Our architectural evaluation confirms the theoretical potential of using Linux and modern NIC hardware to process Carrier-grade traffic.
 
 \section{Testing the Software Switch Concept}
 
@@ -375,34 +242,880 @@ One of the primary goals of XDP-L2-Guard was to explore how eBPF can serve as a 
 
 \subsection{eBPF as an Alternative to iptables}
 
-Traditionally, packet filtering and NAT on Linux rely on \texttt{iptables}. However, \texttt{iptables} uses a sequential list model ($O(n)$ complexity), meaning performance degrades as the rule count grows. Our project allowed us to practically test the performance benefits of eBPF maps. 
-
-By implementing an \texttt{action\_map} (\texttt{BPF\_MAP\_TYPE\_HASH}), our XDP script achieves constant-time $O(1)$ lookups. Although our Python control plane (\texttt{guard.py}) only manages a fraction of the rules a real-world enterprise might use, the fundamental mechanism we demonstrated scales effortlessly, proving the viability of eBPF over legacy \texttt{iptables}.
+Traditionally, packet filtering and NAT on Linux rely on \texttt{iptables}.
+However, \texttt{iptables} uses a sequential list model ($O(n)$ complexity), meaning performance degrades as the rule count grows.
+Our project allowed us to evaluate the structural performance benefits of eBPF maps over linear rule evaluation.
+By utilizing kernel hash maps, the system achieves constant-time $O(1)$ lookups regardless of the number of active rules.
+Although our management control plane manages a subset of the rules a global enterprise might deploy, the fundamental mechanism demonstrated scales effortlessly, proving the viability of eBPF over legacy Netfilter architectures.
 
 \subsection{Basic NAT and the Data Plane Potential}
 
-Instead of relying on the kernel's netfilter stack, we implemented a basic \texttt{ACTION\_NAT} in C to test direct packet manipulation. Our code successfully reads destination IPs, rewrites them, and recalculates the 1's complement checksum using bitwise math directly inside \texttt{filter.c}. 
-
-When combined with \texttt{XDP\_REDIRECT}, this creates a rudimentary but high-speed software switch. While XDP-L2-Guard is not a complete, production-ready router, it successfully demonstrates a tiny fraction of eBPF's capabilities, confirming that Linux has the architectural potential to handle complex, high-speed routing and labeling at the lowest possible software level.
+Instead of relying on the kernel's Netfilter connection tracking stack, we designed a stateless NAT mechanism to evaluate direct packet manipulation.
+This approach successfully parses destination addresses, overwrites them, and recalculates the required header checksums using inline bitwise arithmetic directly within the driver hook.
+When combined with direct egress redirection, this creates a rudimentary but exceptionally high-speed software switch.
+While XDP-L2-Guard is not a complete, production-ready router, it successfully demonstrates a highly impactful fraction of eBPF's capabilities, confirming that Linux possesses the architectural potential to handle complex, high-speed routing and rewriting at the lowest possible software level.
 
 \section{Project Summary and Conclusions}
 
 \subsection{Impressions and Lessons Learned}
 
-Executing the XDP-L2-Guard project provided invaluable hands-on experience with the lowest levels of the Linux networking stack. Our primary impression is one of profound capability mixed with steep learning curves. eBPF and XDP offer unprecedented power to intercept and modify packets at wire speed, but this power comes at the cost of strict Verifier constraints and complex C-level memory handling. We successfully proved that we could write a functional data plane capable of parsing IP headers, rewriting checksums, and orchestrating basic NAT or redirects—all before the kernel allocates any standard socket buffers.
+Executing the XDP-L2-Guard project provided invaluable hands-on experience with the lowest levels of the Linux networking stack.
+Our primary impression is one of profound capability mixed with steep learning curves.
+eBPF and XDP offer unprecedented power to intercept and modify packets at wire speed, but this power comes at the cost of strict Verifier constraints and complex C-level memory handling.
+We successfully proved the viability of designing an autonomous data plane capable of parsing network headers, rewriting checksums, and orchestrating high-speed actions before the kernel allocates standard socket buffers.
 
 \subsection{Why This Project Was Worth Doing}
 
-This project was highly valuable because it demystified the mechanisms behind modern cloud-native networking and software-defined networking (SDN). By building XDP-L2-Guard from scratch, we shifted our understanding of Linux from a simple endpoint or basic firewall into a highly programmable, hardware-adjacent switch. It allowed us to practically experience the limitations of legacy tools like \texttt{iptables} and fully grasp why the industry is rapidly adopting eBPF. The knowledge gained regarding Native XDP, memory bounds-checking, and control/data plane separation forms a critical foundation for modern network engineering.
+This project was highly valuable because it demystified the mechanisms behind modern cloud-native networking and software-defined networking (SDN).
+By building XDP-L2-Guard from scratch, we shifted our understanding of Linux from a simple endpoint or basic firewall into a highly programmable, hardware-adjacent switch.
+It allowed us to practically experience the limitations of legacy tools like \texttt{iptables} and fully grasp why the industry is rapidly adopting eBPF.
+The knowledge gained regarding Native XDP, memory bounds-checking, and control/data plane separation forms a critical foundation for modern network engineering.
 
 \subsection{Future Research and Testing Directions}
 
 While XDP-L2-Guard serves as a successful proof-of-concept, there are numerous avenues for potential future exploration:
 \begin{itemize}
-    \item \textbf{Deep Layer-2/Label Parsing:} Expanding \texttt{filter.c} to natively parse, push, and pop MPLS labels or VLAN tags to simulate a complete Carrier Ethernet Label Switch Router (LSR).
+    \item \textbf{Deep Layer-2/Label Parsing:} Expanding the data plane to natively parse, push, and pop MPLS labels or VLAN tags to simulate a complete Carrier Ethernet Label Switch Router (LSR).
     \item \textbf{Advanced Hardware Tuning:} Further resolving the low-level hardware configuration nuances of Intel NICs to fully unleash Native Mode (\texttt{xdpdrv}) and benchmark it against DPDK-based solutions at 40+ Gbps line rates.
     \item \textbf{Stateful Tracking:} Transitioning from stateless DNAT to fully stateful connections by implementing connection tracking (conntrack) utilizing eBPF LRU (Least Recently Used) hash maps.
     \item \textbf{IPv6 Support:} Extending the C codebase and bounds-checking logic to comprehensively handle IPv6 headers and ICMPv6 routing protocols.
 \end{itemize}
+
+\newpage
+\color{black} 
+\lfoot{Code Analysis} 
+
+\section{Exhaustive System Implementation, Codebase Analysis \& Empirical Showcase}
+
+This dedicated chapter presents a complete, uncompromised deep dive into the practical implementation of XDP-L2-Guard.
+Designed to provide academic evaluators and systems engineers with total clarity over the internal mechanics, this section systematically dissects the C-level data plane, the Python control plane orchestration, and correlates these software mechanisms directly with empirical execution results and terminal screenshots.
+
+\subsection{Repository Access \& Codebase Organization}
+
+The complete source code, including kernel-space eBPF programs, user-space management utilities, and network namespace simulation environments, is publicly maintained and accessible in the official repository:
+
+\vspace{0.5cm}
+\begin{table}[H]
+\centering
+\begin{tabular}{|c|}
+\hline
+\textbf{Official GitHub Repository} \\
+\hline
+\url{https://github.com/KTaraszkiewicz/XDP-L2-Guard} \\
+\hline
+\end{tabular}
+\end{table}
+\vspace{0.5cm}
+
+\noindent The physical project directory is structured to enforce strict decoupling between kernel-space bytecode and user-space management tools:
+
+\begin{lstlisting}[language=bash, title={Project File Directory Layout}, breaklines=false, basicstyle=\ttfamily\scriptsize]
+xdp-l2-guard/
+├── src/
+│   ├── data_plane/         # Kernel Space eBPF C implementation
+│   │   ├── filter.c        # Primary XDP parsing & action logic
+│   │   └── headers.h       # Struct definitions & BOUNDS_CHECK macro
+│   └── control_plane/      # User Space orchestration engines
+│       ├── guard.py        # CLI rule management utility
+│       ├── loader.py       # CO-RE BPF object compiler & mounter
+│       ├── telemetry.py    # Real-time eBPF map monitoring dashboard
+│       └── utils.py        # Helper utilities and logging formatters
+├── scripts/
+│   ├── example/            # 3-node network namespace testbench
+│   ├── pktgen_flood/       # High-speed kernel packet generator
+│   ├── guard.sh            # Pure Bash fallback CLI utility
+│   └── setup_env.sh        # Dependency provisioning script
+├── docs/                   # Architectural documentation & LaTeX manuals
+├── Makefile                # CO-RE Clang/LLVM build directives
+└── LICENSE                 # MIT Open Source License
+\end{lstlisting}
+
+\subsection{Data Plane Deep Dive: eBPF/XDP C Implementation}
+
+The kernel data plane resides in \texttt{src/data\_plane/filter.c} and \texttt{src/data\_plane/headers.h}.
+It is compiled into an ELF object file containing eBPF bytecode using Clang/LLVM.
+
+\subsubsection{Structural Definitions \& Memory Bounds Checking}
+
+Because eBPF programs run in kernel space, any invalid memory access would be catastrophic.
+The eBPF Verifier requires mathematical proof that all packet accesses fall within valid memory ranges.
+To facilitate this, \texttt{headers.h} defines core networking structures and the critical \texttt{BOUNDS\_CHECK} macro.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 1: Memory Layout \& Pointer Validation Pipeline}]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    box/.style={rectangle, draw, fill=blue!10, minimum width=2.8cm, minimum height=1cm, text centered, font=\footnotesize, text=black},
+    ptr/.style={thick, ->, >=stealth, color=warning},
+    lbl/.style={font=\footnotesize\bfseries, color=warning}
+]
+\node[box] (eth) {Ethernet Header};
+\node[box, right=0.5cm of eth, fill=green!10] (ip) {IPv4 Header};
+\node[box, right=0.5cm of ip, fill=orange!10] (icmp) {ICMP / Payload};
+\node[box, right=0.5cm of icmp, fill=gray!20, dashed] (end) {Invalid Memory};
+
+\draw[ptr] (eth.south west) -- ++(0,-0.6) node[below, lbl] {ctx->data (Start)};
+\draw[ptr] (icmp.south east) -- ++(0,-0.6) node[below, lbl] {ctx->data\_end};
+
+\draw[thick, ->, color=primary] (eth.north) -- ++(0,0.8) -| (ip.north);
+\node[font=\scriptsize, color=primary, above] at ($(eth.north)!0.5!(ip.north) + (0,0.8)$) {BOUNDS\_CHECK(eth + 1 $\le$ data\_end)};
+
+\draw[thick, ->, color=primary] (ip.north) -- ++(0,0.4) -| (icmp.north);
+% Przesunięto xshift=1.2cm by naprawić przecięcie strzałki
+\node[font=\scriptsize, color=primary, above, xshift=1.2cm] at ($(ip.north)!0.5!(icmp.north) + (0,0.4)$) {BOUNDS\_CHECK(ip + 1 $\le$ data\_end)};
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=C, title={src/data\_plane/headers.h - Core Macros \& Structures}]
+#ifndef __HEADERS_H
+#define __HEADERS_H
+
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/in.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
+
+struct icmphdr {
+  __u8		type;
+  __u8		code;
+  __sum16	checksum;
+  union {
+	struct {
+		__be16	id;
+		__be16	sequence;
+	} echo;
+	__be32	gateway;
+	struct {
+		__be16	__unused;
+		__be16	mtu;
+	} frag;
+	__u8	reserved[4];
+  } un;
+};
+
+#define ICMP_ECHO		8
+#define ICMP_ECHOREPLY		0
+
+#define BOUNDS_CHECK(pointer, type, data_end) \
+    do { \
+        if ((void *)(pointer) + sizeof(type) > (void *)(data_end)) \
+            return XDP_PASS; \
+    } while(0)
+
+#endif // __HEADERS_H
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} The \texttt{BOUNDS\_CHECK} macro takes a given memory pointer, evaluates its structural size using \texttt{sizeof(type)}, and compares the resulting boundary against \texttt{data\_end}.
+If the calculated pointer extends beyond the packet buffer, the macro instantly forces an \texttt{XDP\_PASS}, allowing the Linux kernel to handle or drop the malformed frame.
+This guarantees that the eBPF Verifier passes the program without throwing pointer arithmetic errors.
+
+\subsubsection{eBPF Maps \& Action Schemas}
+
+In \texttt{src/data\_plane/filter.c}, the communication between user-space management tools and the kernel data plane is established using distinct eBPF map structures defined via the \texttt{SEC(".maps")} directive.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 2: eBPF Map Multi-Table Lookup Architecture}]
+\centering
+\begin{tikzpicture}[
+    node distance=2cm,
+    mapbox/.style={rectangle, draw, fill=yellow!10, text width=4.5cm, text centered, rounded corners, font=\scriptsize, text=black},
+    arrow/.style={thick, ->, >=stealth, color=primary}
+]
+\node[mapbox] (action) {\textbf{action\_map (HASH)} \\ Key: \_\_u32 (Source IP) \\ Value: struct action\_cfg \\ Max Entries: 10,000};
+\node[mapbox, right=1cm of action] (stats) {\textbf{source\_stats\_map (HASH)} \\ Key: \_\_u32 (Source IP) \\ Value: \_\_u64 (Packet Count) \\ Max Entries: 10,000};
+\node[mapbox, below=1cm of action] (dev) {\textbf{dev\_map (DEVMAP)} \\ Key: \_\_u32 (ifindex) \\ Value: \_\_u32 (ifindex) \\ Max Entries: 256};
+\node[mapbox, right=1cm of dev] (total) {\textbf{total\_dropped (ARRAY)} \\ Key: \_\_u32 (Index 0) \\ Value: \_\_u64 (Global Drops) \\ Max Entries: 1};
+
+\draw[arrow, dashed] (action) -- node[left, font=\scriptsize] {If REDIRECT} (dev);
+\draw[arrow, dashed] (action) -- node[right, font=\scriptsize] {If DROP} (total);
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=C, title={src/data\_plane/filter.c - Map Definitions \& Enumerations}]
+#include "headers.h"
+
+enum xdp_action_target {
+    ACTION_PASS = 0,
+    ACTION_DROP,
+    ACTION_TX,
+    ACTION_REDIRECT,
+    ACTION_NAT
+};
+
+struct action_cfg {
+    __u32 target;           // Selected action (PASS, DROP, TX, REDIRECT, NAT)
+    __u32 new_ip;           // Replacement Destination IP for NAT actions
+    __u32 ifindex;          // Output network interface index for REDIRECT
+    __u64 dropped_packets;  // Atomic per-rule drop counter
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);
+    __type(value, struct action_cfg);
+    __uint(max_entries, 10000);
+} action_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+    __uint(max_entries, 256);
+} dev_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 1);
+} total_dropped SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 10000);
+} source_stats_map SEC(".maps");
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} The \texttt{action\_map} is a high-performance hash table storing up to 10,000 filtering directives.
+The key is an IPv4 address stored as a 32-bit unsigned integer (\texttt{\_\_u32}) in network byte order.
+The value is a \texttt{struct action\_cfg} containing the execution target, a replacement IP for NAT operations, an egress interface index (\texttt{ifindex}) for redirection, and an atomic packet drop counter.
+\texttt{dev\_map} is a specialized BPF map (\texttt{BPF\_MAP\_TYPE\_DEVMAP}) used exclusively by the \texttt{bpf\_redirect\_map} helper to forward frames to hardware interface rings.
+\texttt{source\_stats\_map} tracks real-time packet ingress volumes per source IP for telemetry dashboards.
+
+\subsubsection{Low-Level Helper Functions: Header Manipulation \& Checksum Math}
+
+To perform fast-path bounce (\texttt{XDP\_TX}) and stateless NAT (\texttt{ACTION\_NAT}), the XDP program must modify MAC addresses, IP addresses, and recalculate header checksums inline.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 3: Incremental Checksum Recalculation (1's Complement Arithmetic)}]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm,
+    % Zmniejszono czcionkę na \tiny i poszerzono węzeł do 12cm
+    step/.style={rectangle, draw, fill=blue!10, text width=12cm, text centered, rounded corners, font=\tiny, text=black},
+    arrow/.style={thick, ->, >=stealth, color=primary}
+]
+\node[step] (s1) {1. Extract old checksum \& invert};
+\node[step, below=0.5cm of s1] (s2) {2. Subtract old IP \& add new IP (16-bit chunks)};
+\node[step, below=0.5cm of s2] (s3) {3. Fold overflow bits above 16 bits};
+\node[step, below=0.5cm of s3] (s4) {4. Invert back to 1's complement};
+
+\draw[arrow] (s1) -- (s2);
+\draw[arrow] (s2) -- (s3);
+\draw[arrow] (s3) -- (s4);
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=C, title={src/data\_plane/filter.c - Internal Rewriting Helpers}]
+static __always_inline void swap_mac(struct ethhdr *eth) {
+    __u8 tmp[ETH_ALEN];
+    __builtin_memcpy(tmp, eth->h_source, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, eth->h_dest, ETH_ALEN);
+    __builtin_memcpy(eth->h_dest, tmp, ETH_ALEN);
+}
+
+static __always_inline void swap_ip(struct iphdr *ip) {
+    __u32 tmp = ip->saddr;
+    ip->saddr = ip->daddr;
+    ip->daddr = tmp;
+}
+
+static __always_inline void update_ip_checksum(struct iphdr *ip, __u32 new_daddr) {
+    __u32 old_daddr = ip->daddr;
+    __u32 csum = ~bpf_ntohs(ip->check) & 0xFFFF;
+    csum += (~(old_daddr & 0xFFFF) & 0xFFFF) + (new_daddr & 0xFFFF);
+    csum += (~(old_daddr >> 16) & 0xFFFF) + (new_daddr >> 16);
+    while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+    ip->check = bpf_htons(~csum & 0xFFFF);
+    ip->daddr = new_daddr;
+}
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} The \texttt{\_\_always\_inline} directive forces the compiler to embed these functions directly into the main execution path, preventing function call overhead in kernel space.
+\texttt{swap\_mac} utilizes the compiler built-in \texttt{\_\_builtin\_memcpy} to swap the 6-byte source and destination MAC addresses efficiently.
+\texttt{update\_ip\_checksum} avoids a computationally expensive loop across the entire IP header.
+Instead, it leverages the mathematical properties of 1's complement arithmetic.
+It subtracts the old destination IP (by adding its bitwise negation) and adds the new destination IP in 16-bit words.
+Any carry bits overflowing the 16-bit boundary are folded back into the lower 16 bits until no overflow remains.
+Finally, the value is inverted and converted back to big-endian network byte order via \texttt{bpf\_htons}.
+
+\subsubsection{Core XDP Processing Loop: \texttt{xdp\_drop\_logic}}
+
+The primary entry point for packet processing is decorated with the \texttt{SEC("xdp")} macro, binding it to the network driver hook.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 4: Execution Flow of \texttt{xdp\_drop\_logic}}]
+\centering
+\begin{tikzpicture}[
+    node distance=1cm,
+    block/.style={rectangle, draw, fill=blue!10, text width=3.2cm, text centered, rounded corners, font=\scriptsize, text=black},
+    % Lekko poszerzony romb decyzyjny (text width=2.4cm) dla bezpieczeństwa 
+    decision/.style={diamond, draw, fill=orange!10, text width=2.4cm, text centered, font=\scriptsize, text=black},
+    action/.style={ellipse, draw, fill=green!10, text width=2.2cm, text centered, font=\scriptsize, text=black},
+    arrow/.style={thick, ->, >=stealth, color=primary}
+]
+\node[block] (start) {Ingress Frame (ctx)};
+\node[block, below=0.6cm of start] (parse) {Parse Eth \& IP Headers};
+\node[decision, below=0.6cm of parse] (check) {IP in action\_map?};
+\node[action, right=1.5cm of check] (pass1) {XDP\_PASS (Stack)};
+\node[block, below=0.6cm of check] (switch) {Evaluate cfg->target};
+\node[action, below left=1cm and 1.5cm of switch] (drop) {XDP\_DROP};
+\node[action, below=1cm of switch] (tx) {XDP\_TX (Bounce)};
+\node[action, below right=1cm and 1.5cm of switch] (redir) {XDP\_REDIRECT};
+
+\draw[arrow] (start) -- (parse);
+\draw[arrow] (parse) -- (check);
+\draw[arrow] (check) -- node[above, font=\scriptsize] {No} (pass1);
+\draw[arrow] (check) -- node[left, font=\scriptsize] {Yes} (switch);
+
+\draw[arrow] (switch) -- (drop);
+\draw[arrow] (switch) -- (tx);
+\draw[arrow] (switch) -- (redir);
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=C, title={src/data\_plane/filter.c - Main XDP Routine}]
+SEC("xdp")
+int xdp_drop_logic(struct xdp_md *ctx) {
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct ethhdr *eth = data;
+    BOUNDS_CHECK(eth, struct ethhdr, data_end);
+
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) return XDP_PASS;
+    struct iphdr *ip = data + sizeof(struct ethhdr);
+    BOUNDS_CHECK(ip, struct iphdr, data_end);
+
+    __u32 src_ip = ip->saddr;
+    __u64 *pkt_count = bpf_map_lookup_elem(&source_stats_map, &src_ip);
+    if (pkt_count) {
+        __sync_fetch_and_add(pkt_count, 1);
+    } else {
+        __u64 init_count = 1;
+        bpf_map_update_elem(&source_stats_map, &src_ip, &init_count, BPF_ANY);
+    }
+
+    struct action_cfg *cfg = bpf_map_lookup_elem(&action_map, &src_ip);
+    
+    bpf_printk("XDP: lookup src_ip=%pI4 hex=%x cfg=%p", &src_ip, src_ip, cfg);
+    if (!cfg) return XDP_PASS;
+
+    switch (cfg->target) {
+        case ACTION_DROP: {
+            __u32 key = 0;
+            __u64 *val = bpf_map_lookup_elem(&total_dropped, &key);
+            if (val) __sync_fetch_and_add(val, 1);
+            __sync_fetch_and_add(&cfg->dropped_packets, 1);
+            return XDP_DROP;
+        }
+
+        case ACTION_TX: {
+            if (ip->protocol == IPPROTO_ICMP) {
+                struct icmphdr *icmp = (void *)ip + sizeof(struct iphdr);
+                BOUNDS_CHECK(icmp, struct icmphdr, data_end);
+
+                if (icmp->type == ICMP_ECHO) {
+                    icmp->type = ICMP_ECHOREPLY;
+                    __u32 temp_csum = bpf_ntohs(icmp->checksum) + 0x0800;
+                    if (temp_csum > 0xFFFF) temp_csum -= 0xFFFF;
+                    icmp->checksum = bpf_htons(temp_csum);
+
+                    swap_mac(eth);
+                    swap_ip(ip);
+                    return XDP_TX;
+                }
+            }
+            return XDP_PASS;
+        }
+
+        case ACTION_REDIRECT: {
+            if (cfg->new_ip) {
+                update_ip_checksum(ip, cfg->new_ip);
+            }
+            int err = bpf_redirect_map(&dev_map, cfg->ifindex, 0);
+            bpf_printk("XDP: redirect dnat=%pI4 ifindex=%u res=%d", &cfg->new_ip, cfg->ifindex, err);
+            return err;
+        }
+
+        case ACTION_NAT: {
+            update_ip_checksum(ip, cfg->new_ip);
+            return XDP_PASS;
+        }
+
+        case ACTION_PASS:
+        default:
+            return XDP_PASS;
+    }
+}
+
+char _license[] SEC("license") = "GPL";
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} 
+\begin{itemize}
+    \item \textbf{Ingress Telemetry:} Before evaluating filtering rules, the code extracts \texttt{ip->saddr}.
+It queries \texttt{source\_stats\_map} via \texttt{bpf\_map\_lookup\_elem}. If an entry exists, it performs an atomic increment using \texttt{\_\_sync\_fetch\_and\_add(pkt\_count, 1)}.
+If not, it registers the IP with an initial count of 1. This happens at wire speed for every incoming IPv4 packet.
+    \item \textbf{Rule Evaluation:} The source IP is looked up in \texttt{action\_map}.
+If no configuration (\texttt{cfg}) is found, the packet defaults to \texttt{XDP\_PASS}, handing it over to the standard Linux network stack.
+    \item \textbf{\texttt{ACTION\_DROP}:} If the target is \texttt{ACTION\_DROP}, the global drop counter (\texttt{total\_dropped}) and the per-rule drop counter (\texttt{cfg->dropped\_packets}) are atomically incremented.
+The function returns \texttt{XDP\_DROP}, instructing the NIC driver to drop the frame and recycle the DMA buffer instantly.
+    \item \textbf{\texttt{ACTION\_TX} (ICMP Hairpinning):} If the packet is an ICMP echo request (Ping, Type 8), it is converted to an echo reply (Type 0).
+Because the type field changes by a value of 8 (\texttt{0x0800} in 16-bit big-endian representation), the checksum is adjusted by adding \texttt{0x0800}.
+The MAC and IP addresses are swapped, and \texttt{XDP\_TX} bounces the packet back out of the incoming interface, completely bypassing the OS routing table.
+    \item \textbf{\texttt{ACTION\_REDIRECT}:} If a new destination IP is specified, \texttt{update\_ip\_checksum} rewrites the packet.
+Then, \texttt{bpf\_redirect\_map} forwards the frame to the interface index defined in \texttt{dev\_map}.
+\end{itemize}
+
+\subsection{Control Plane Deep Dive: Python CO-RE Orchestration}
+
+The user-space control plane is responsible for compiling the C data plane, loading it into the kernel, managing filtering rules, and providing real-time telemetry dashboards.
+
+\subsubsection{Lifecycle Orchestration: \texttt{loader.py}}
+
+\texttt{src/control\_plane/loader.py} compiles the eBPF binary and attaches it to the target network interface using the \texttt{iproute2} toolchain.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 5: Lifecycle Engine Execution Pipeline (\texttt{loader.py})}]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm,
+    block/.style={rectangle, draw, fill=blue!10, text width=2.8cm, text centered, rounded corners, font=\scriptsize, text=black},
+    arrow/.style={thick, ->, >=stealth, color=primary}
+]
+\node[block] (make) {1. Trigger Make (Clang AOT Compile)};
+\node[block, right=0.6cm of make] (clean) {2. Flush Existing XDP Attachments};
+\node[block, right=0.6cm of clean] (attach) {3. Attach \texttt{filter.o} via \texttt{ip -force}};
+\node[block, right=0.6cm of attach] (loop) {4. Enter Map Polling Loop (1s interval)};
+
+\draw[arrow] (make) -- (clean);
+\draw[arrow] (clean) -- (attach);
+\draw[arrow] (attach) -- (loop);
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=Python, title={src/control\_plane/loader.py - XDP Mounting \& Polling Engine}]
+#!/usr/bin/env python3
+import time
+import sys
+import os
+import argparse
+import subprocess
+import json
+import struct
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils import setup_logger, int_to_ip
+
+def run_cmd(cmd):
+    return subprocess.run(cmd, shell=True, text=True, capture_output=True)
+
+def main():
+    parser = argparse.ArgumentParser(description="XDP-L2-Guard CO-RE Control Plane")
+    parser.add_argument("-i", "--interface", required=True, help="Network interface")
+    parser.add_argument("--generic", action="store_true", help="Force XDP generic mode")
+    parser.add_argument("-n", "--non-interactive", action="store_true", help="Exit after attachment")
+    args = parser.parse_args()
+
+    logger = setup_logger()
+    interface = args.interface
+    control_plane_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(control_plane_dir, "../../"))
+    bpf_obj_file = os.path.join(project_root, "src/data_plane/filter.o")
+
+    logger.info(f"Initializing engine on {interface}")
+
+    compile_res = run_cmd(f"make -C {project_root}")
+    if compile_res.returncode != 0:
+        logger.error(f"Compilation error:\n{compile_res.stderr}")
+        sys.exit(1)
+    
+    if not os.path.exists(bpf_obj_file):
+        logger.error("Error: filter.o not found")
+        sys.exit(1)
+
+    xdp_mode = "xdpgeneric" if args.generic else "xdpdrv"
+    if not args.generic:
+        logger.info("Attaching in native mode")
+
+    run_cmd(f"ip link set dev {interface} xdpgeneric off")
+    run_cmd(f"ip link set dev {interface} xdpdrv off")
+    run_cmd(f"ip link set dev {interface} xdp off") 
+    
+    attach_res = run_cmd(f"ip -force link set dev {interface} {xdp_mode} obj {bpf_obj_file} sec xdp")
+    
+    if attach_res.returncode != 0:
+        logger.error(f"Mount error:\n{attach_res.stderr}")
+        sys.exit(1)
+
+    logger.info("Attached to XDP")
+    
+    if args.non_interactive:
+        return
+
+    logger.info("Monitoring active (Ctrl+C to abort)")
+
+    try:
+        while True:
+            time.sleep(1)
+            dump_res = run_cmd("bpftool -j map dump name action_map")
+            
+            if dump_res.returncode == 0 and dump_res.stdout.strip():
+                map_data = json.loads(dump_res.stdout)
+                if map_data:
+                    print("\n" + "-"*50)
+                    logger.info("Active drops:")
+                    for item in map_data:
+                        try:
+                            drop_count = item["value"]["dropped_packets"]
+                            ip_addr = int_to_ip(item["key"])
+                            logger.info(f" -> Source [{ip_addr}] blocked: {drop_count} pkts")
+                        except Exception:
+                            key_bytes = bytes([int(x, 16) for x in item["key"]])
+                            val_bytes = bytes([int(x, 16) for x in item["value"]])
+                            ip_addr = int_to_ip(struct.unpack("<I", key_bytes)[0])
+                            drop_count = struct.unpack("<Q", val_bytes[16:24])[0]
+                            logger.info(f" -> Source [{ip_addr}] blocked: {drop_count} pkts")
+                    print("-"*50)
+                else:
+                    sys.stdout.write(". ")
+                    sys.stdout.flush()
+            else:
+                sys.stdout.write(". ")
+                sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        print()
+        logger.info("SIGINT caught. Dismantling...")
+    finally:
+        run_cmd(f"ip link set dev {interface} {xdp_mode} off")
+        run_cmd(f"ip link set dev {interface} xdp off")
+        logger.info(f"Detached from {interface}")
+
+if __name__ == "__main__":
+    main()
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} The script begins by invoking \texttt{make -C} to compile \texttt{filter.c} into \texttt{filter.o} using Clang. It determines the attachment mode based on the \texttt{--generic} flag, defaulting to native driver attachment (\texttt{xdpdrv}). To ensure clean execution, it forcefully detaches any existing XDP programs on the interface before executing \texttt{ip -force link set dev <interface> <mode> obj filter.o sec xdp}. Once attached, it 
+enters an infinite loop, querying the kernel every second using \texttt{bpftool -j map dump name action\_map}.
+It parses the resulting JSON payload, unpacks the raw byte arrays representing C structures using \texttt{struct.unpack("<Q", val\_bytes[16:24])}, and outputs real-time drop statistics to the console.
+When terminated via \texttt{SIGINT} (\texttt{Ctrl+C}), the \texttt{finally} block cleans up by unloading the eBPF program from the interface.
+
+\subsubsection{CLI Rule Management: \texttt{guard.py}}
+
+\texttt{src/control\_plane/guard.py} provides an \texttt{iptables}-like CLI to add, delete, and list filtering rules in the kernel maps.
+
+\begin{tcolorbox}[colback=yellow!5, colframe=secondary, title=\textbf{Schematic 6: Python to C Memory Alignment (\texttt{struct.pack})}]
+\centering
+\begin{tikzpicture}[
+    node distance=0.3cm,
+    box/.style={rectangle, draw, fill=blue!10, minimum width=2.2cm, minimum height=0.8cm, text centered, font=\scriptsize, text=black},
+    label/.style={font=\scriptsize\bfseries, color=secondary}
+]
+\node[box] (t) {target (4B)};
+\node[box, right=of t, fill=green!10] (nip) {new\_ip (4B)};
+\node[box, right=of nip, fill=orange!10] (ifidx) {ifindex (4B)};
+\node[box, right=of ifidx, fill=gray!20] (pad) {pad (4B)};
+\node[box, right=of pad, fill=red!10, minimum width=2.8cm] (drop) {dropped\_packets (8B)};
+\node[below=0.1cm of t, label] {uint32};
+\node[below=0.1cm of nip, label] {uint32};
+\node[below=0.1cm of ifidx, label] {uint32};
+\node[below=0.1cm of pad, label] {uint32 (Align)};
+\node[below=0.1cm of drop, label] {uint64 (Total 24B)};
+\node[above=0.2cm of ifidx, font=\footnotesize\bfseries, color=primary] {struct.pack("<IIIIQ", target, new\_ip\_int, ifindex, 0, 0)};
+\end{tikzpicture}
+\end{tcolorbox}
+
+\begin{lstlisting}[language=Python, title={src/control\_plane/guard.py - Map Injection Engine}]
+#!/usr/bin/env python3
+import sys
+import argparse
+import subprocess
+import socket
+import struct
+import json
+
+ACTION_PASS = 0
+ACTION_DROP = 1
+ACTION_TX = 2
+ACTION_REDIRECT = 3
+ACTION_NAT = 4
+
+def run_cmd(cmd):
+    return subprocess.run(cmd, shell=True, text=True, capture_output=True)
+
+def ip_to_hex(ip):
+    return " ".join([f"{b:02x}" for b in socket.inet_aton(ip)])
+
+def get_map_id(name):
+    res = run_cmd(f"bpftool map list | grep -m 1 {name}")
+    if res.returncode != 0 or not res.stdout:
+        return None
+    return res.stdout.split(":")[0].strip()
+
+def get_ifindex(iface):
+    res = run_cmd(f"ip -o link show dev {iface}")
+    if res.returncode != 0 or not res.stdout:
+        return None
+    try:
+        return int(res.stdout.split(":")[0].strip())
+    except (IndexError, ValueError):
+        return None
+
+def main():
+    parser = argparse.ArgumentParser(description="XDP-L2-Guard CLI")
+    parser.add_argument("-A", "--append", action="store_true", help="Add rule")
+    parser.add_argument("-D", "--delete", action="store_true", help="Delete rule")
+    parser.add_argument("-L", "--list", action="store_true", help="List rules")
+    parser.add_argument("-s", "--source", help="Source IP to filter")
+    parser.add_argument("-d", "--destination", help="Destination IP (alias for source)")
+    parser.add_argument("-j", "--jump", choices=["PASS", "DROP", "TX", "REDIRECT", "NAT"], help="Action target")
+    parser.add_argument("--to-destination", help="NAT destination IP")
+    parser.add_argument("--oif", help="Redirect output interface")
+
+    args = parser.parse_args()
+
+    act_map_id = get_map_id("action_map")
+    dev_map_id = get_map_id("dev_map")
+
+    if not act_map_id:
+        print("Error: action_map not found")
+        sys.exit(1)
+
+    if args.list:
+        print(f"{'SOURCE IP':<15} | {'ACTION':<10} | {'PKTS':<8} | {'DETAILS'}")
+        print("-" * 60)
+        res = run_cmd(f"bpftool -j map dump id {act_map_id}")
+        if res.stdout:
+            for item in json.loads(res.stdout):
+                ip = socket.inet_ntoa(bytes([int(x, 16) for x in item["key"]]))
+                target, new_ip, ifindex, _, dropped = struct.unpack("<IIIIQ", bytes([int(x, 16) for x in item["value"]]))
+                
+                actions = ["PASS", "DROP", "TX", "REDIRECT", "NAT"]
+                act_str = actions[target] if target < len(actions) else "UNKNOWN"
+                
+                details = ""
+                if target == ACTION_NAT:
+                    details = f"to {socket.inet_ntoa(struct.pack('<I', new_ip))}"
+                elif target == ACTION_REDIRECT:
+                    details = f"to ifindex {ifindex}"
+                
+                print(f"{ip:<15} | {act_str:<10} | {dropped:<8} | {details}")
+        return
+
+    target_ip = args.source or args.destination
+
+    if args.append:
+        if not target_ip or not args.jump:
+            print("Error: -A requires -s <IP> and -j <ACTION>")
+            sys.exit(1)
+
+        target = {"PASS": ACTION_PASS, "DROP": ACTION_DROP, "TX": ACTION_TX, "REDIRECT": ACTION_REDIRECT, "NAT": ACTION_NAT}[args.jump]
+        new_ip_int = 0
+
+        if args.jump in ["NAT", "REDIRECT"]:
+            if args.to_destination:
+                new_ip_int = struct.unpack("<I", socket.inet_aton(args.to_destination))[0]
+            elif args.jump == "NAT":
+                print("Error: NAT requires --to-destination <IP>")
+                sys.exit(1)
+
+        ifindex = 0
+        if args.jump == "REDIRECT":
+            if not args.oif:
+                print("Error: REDIRECT requires --oif <IFACE>")
+                sys.exit(1)
+            ifindex = get_ifindex(args.oif)
+            if not ifindex:
+                print(f"Error: Interface {args.oif} not found")
+                sys.exit(1)
+            
+            ifindex_hex = " ".join([f"{b:02x}" for b in struct.pack("<I", ifindex)])
+            run_cmd(f"bpftool map update id {dev_map_id} key hex {ifindex_hex} value hex {ifindex_hex}")
+
+        val_hex = " ".join([f"{b:02x}" for b in struct.pack("<IIIIQ", target, new_ip_int, ifindex, 0, 0)])
+        res = run_cmd(f"bpftool map update id {act_map_id} key hex {ip_to_hex(target_ip)} value hex {val_hex}")
+        
+        if res.returncode == 0:
+            print(f"Added rule: {target_ip} -> {args.jump}")
+        else:
+            print(f"Error adding rule: {res.stderr}")
+
+    elif args.delete:
+        if not target_ip:
+            print("Error: -D requires -s <IP>")
+            sys.exit(1)
+        
+        res = run_cmd(f"bpftool map delete id {act_map_id} key hex {ip_to_hex(target_ip)}")
+        if res.returncode == 0:
+            print(f"Deleted rule for {target_ip}")
+        else:
+            print(f"Error deleting rule: {res.stderr}")
+
+if __name__ == "__main__":
+    main()
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} \texttt{guard.py} acts as an RPC client to the kernel BPF maps.
+When injecting a rule via \texttt{-A}, it resolves the target eBPF map IDs using \texttt{bpftool map list}.
+For \texttt{REDIRECT} actions, it dynamically resolves the interface name (e.g., \texttt{veth1}) to its kernel interface index (\texttt{ifindex}) using \texttt{ip -o link show dev}.
+To populate the \texttt{action\_map}, the Python script must format data to match the C \texttt{struct action\_cfg} layout exactly.
+Because C compilers insert padding to align 64-bit integers (\texttt{\_\_u64 dropped\_packets}) on 8-byte boundaries, Python's \texttt{struct.pack("<IIIIQ", ...)} explicitly packs four 32-bit integers (target, new\_ip, ifindex, padding) followed by a 64-bit integer (dropped\_packets).
+This produces a perfectly aligned 24-byte hex string that \texttt{bpftool map update} injects into kernel memory.
+
+\subsubsection{Live Telemetry Dashboard: \texttt{telemetry.py}}
+
+\texttt{src/control\_plane/telemetry.py} monitors \texttt{source\_stats\_map} to display real-time traffic volumes per source IP.
+
+\begin{lstlisting}[language=Python, title={src/control\_plane/telemetry.py - Real-Time Dashboard}]
+#!/usr/bin/env python3
+import sys
+import time
+import subprocess
+import json
+import socket
+import struct
+import os
+
+def run_cmd(cmd):
+    return subprocess.run(cmd, shell=True, text=True, capture_output=True)
+
+def get_map_id(name):
+    res = run_cmd(f"bpftool map list | grep -m 1 {name}")
+    if res.returncode != 0 or not res.stdout:
+        return None
+    return res.stdout.split(":")[0].strip()
+
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def main():
+    # BPF map names are limited to 15 chars, so 'source_stats_map' truncates to 'source_stats_ma'
+    map_id = get_map_id("source_stats_ma")
+    
+    if not map_id:
+        print("Error: source_stats_ma not found. Is the XDP program loaded?")
+        sys.exit(1)
+
+    print(f"Monitoring map ID: {map_id}. Press Ctrl+C to stop.")
+    
+    try:
+        while True:
+            res = run_cmd(f"bpftool -j map dump id {map_id}")
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                stats = []
+                for item in data:
+                    ip = socket.inet_ntoa(bytes([int(x, 16) for x in item["key"]]))
+                    count = struct.unpack("<Q", bytes([int(x, 16) for x in item["value"]]))[0]
+                    stats.append((ip, count))
+                
+                stats.sort(key=lambda x: x[1], reverse=True)
+                
+                clear_screen()
+                print("=== XDP Telemetry: Packets per Source IP ===")
+                print(f"{'SOURCE IP':<18} | {'PACKETS':<10}")
+                print("-" * 31)
+                for ip, count in stats:
+                    print(f"{ip:<18} | {count:<10}")
+                
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+\end{lstlisting}
+
+\noindent \textbf{Code Analysis:} Due to a strict 15-character limit on eBPF map names in older kernel versions, \texttt{source\_stats\_map} is truncated in kernel space to \texttt{source\_stats\_ma}. The script retrieves this map ID using \texttt{bpftool}. In a 1-second polling loop, it extracts the map contents in JSON format, decodes the hex keys into IPv4 strings using \texttt{socket.inet\_ntoa}, unpacks the 64-bit unsigned integer values (\texttt{<Q}) representing packet counts, sorts the results in descending order, and 
+clears the terminal screen to display a dynamic, real-time telemetry dashboard.
+
+\FloatBarrier
+\subsection{Empirical Showcase: Step-by-Step Execution Walkthrough}
+
+To demonstrate and validate the practical capabilities of XDP-L2-Guard, the \texttt{scripts/example/} directory provides an interactive testbench utilizing Linux Network Namespaces (\texttt{netns}).
+This section correlates the execution of these test scripts directly with terminal screenshots, illustrating the real-time impact of eBPF filtering.
+
+\subsubsection{Testbench Topology Setup}
+
+The \texttt{setup.sh} script establishes a simulated 3-node network environment using virtual Ethernet pairs:
+\begin{itemize}
+    \item \textbf{\texttt{ns1} (Filter/Router)}: Assigned IP \texttt{10.0.0.1}.
+The eBPF object is attached to virtual interfaces \texttt{v1-2} and \texttt{v1-3}. IPv4 forwarding is enabled.
+    \item \textbf{\texttt{ns2} (Sender)}: Assigned IP \texttt{10.0.0.2}. Acts as the source of traffic.
+    \item \textbf{\texttt{ns3} (Target)}: Assigned IP \texttt{10.0.0.3} in promiscuous mode to observe redirected packets.
+\end{itemize}
+
+\subsubsection{Phase 1: Environment Provisioning \& Program Attachment}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_setup.png}
+    \caption{Terminal output confirming the creation of virtual Ethernet pairs, namespace routing setup, and successful XDP program attachment.}
+\end{figure}
+
+\noindent \textbf{Empirical Walkthrough:} The screenshot displays the initialization sequence executed by \texttt{setup.sh}.
+The system creates two virtual Ethernet links (\texttt{v1-2} to \texttt{v2-1} and \texttt{v1-3} to \texttt{v3-1}) connecting the three namespaces.
+It assigns IP addresses and enables IP forwarding in \texttt{ns1}.
+Finally, \texttt{loader.py} is invoked in the background, compiling \texttt{filter.c} and successfully attaching the resulting eBPF bytecode to interfaces \texttt{v1-2} and \texttt{v1-3}.
+The orchestrator enters its monitoring loop, waiting for map updates.
+
+\subsubsection{Phase 2: Establishing the Baseline Validation}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_baseline.png}
+    \caption{Baseline verification: Standard ICMP echo replies passing unimpeded through the kernel network stack.}
+\end{figure}
+
+\noindent \textbf{Empirical Walkthrough:} In this validation phase, a continuous ping is initiated from \texttt{ns2} (\texttt{10.0.0.2}) to \texttt{ns1} (\texttt{10.0.0.1}).
+Because \texttt{action\_map} is currently empty, when the XDP program inspects incoming packets on \texttt{v1-2}, \texttt{bpf\_map\_lookup\_elem} returns \texttt{NULL}.
+As a result, the code executes \texttt{return XDP\_PASS}. This allows the frames to pass into the standard Linux network stack, where the kernel allocates \texttt{sk\_buff} structures, processes the ICMP echo requests, and returns standard echo replies.
+The screenshot confirms an uninterrupted baseline latency of ~0.05 ms.
+
+\subsubsection{Phase 3: Dynamic Rule Injection via CLI}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_guard_action.png}
+    \caption{CLI rule injection: Appending a DROP policy for source IP 10.0.0.2 to the BPF action map.}
+\end{figure}
+
+\noindent \textbf{Empirical Walkthrough:} The operator executes \texttt{guard.sh -A -d 10.0.0.2 -j DROP} (or the equivalent Python \texttt{guard.py}).
+The screenshot captures the successful execution of this command. In the background, the CLI tool converts the IP string \texttt{10.0.0.2} into a hex key (\texttt{0a 00 00 02}), constructs a 24-byte value representing \texttt{struct action\_cfg} with \texttt{target = 1} (\texttt{ACTION\_DROP}), and executes \texttt{bpftool map update}.
+The rule is injected into kernel memory instantly, without interrupting network connections or requiring a system reboot.
+
+\subsubsection{Phase 4: Real-Time Kernel-Space Packet Dropping}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_ping_dropped.png}
+    \caption{Enforcing the XDP policy: Immediate 100\% packet loss as XDP\_DROP intercepts frames at the driver level.}
+\end{figure}
+
+\noindent \textbf{Empirical Walkthrough:} The moment the rule is injected into \texttt{action\_map}, the execution path inside \texttt{xdp\_drop\_logic} changes.
+As incoming ICMP packets arrive from \texttt{10.0.0.2}, \texttt{bpf\_map\_lookup\_elem} locates the matching configuration with \texttt{target == ACTION\_DROP}.
+The program executes \texttt{return XDP\_DROP}. The network driver drops the frames directly from the RX ring buffer before the Linux kernel is aware of them.
+The screenshot demonstrates this real-time impact: the ping output abruptly stops receiving replies, showing 100\% packet loss.
+Simultaneously, the polling loop in \texttt{loader.py} outputs active drop notifications, confirming that the atomic counters are incrementing at wire speed.
+
+\subsubsection{Phase 5: Fast-Path Egress Redirection \& Stateless NAT}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/screenshot_redirect.png}
+    \caption{XDP\_REDIRECT in action: Traffic intended for 10.0.0.1 is transparently intercepted, rewritten, and routed to the target namespace (ns3) at the driver level.}
+\end{figure}
+
+\noindent \textbf{Empirical Walkthrough:} To evaluate advanced data plane forwarding, the operator replaces the drop rule with a redirection policy: \texttt{guard.sh -A -d 10.0.0.2 -j REDIRECT --oif v1-3}.
+When packets arrive at \texttt{v1-2}, \texttt{xdp\_drop\_logic} identifies the \texttt{ACTION\_REDIRECT} target.
+The helper function \texttt{update\_ip\_checksum} rewrites the destination IP and updates the header checksum using 1's complement bitwise arithmetic.
+The program then calls \texttt{bpf\_redirect\_map(\&dev\_map, cfg->ifindex, 0)}, forwarding the raw frame directly out of interface \texttt{v1-3} toward \texttt{ns3}.
+The screenshot confirms this end-to-end operation. In the top terminal, \texttt{ns2} transmits packets toward \texttt{10.0.0.1}.
+In the bottom terminal, a packet sniffer running in promiscuous mode inside \texttt{ns3} (\texttt{10.0.0.3}) captures the redirected frames.
+The entire interception, rewriting, and forwarding lifecycle occurs entirely within the eBPF layer at the NIC driver hook, completely bypassing the standard routing tables and firewall rules in \texttt{ns1}.
 
 \end{document}
